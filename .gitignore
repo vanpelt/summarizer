@@ -1,0 +1,77 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+env/
+
+# Environment variables
+.env
+.env.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Models and checkpoints
+models/**/*.bin
+models/**/*.safetensors
+models/**/*.pt
+models/**/*.pth
+models/**/*.ckpt
+models/**/adapter_model.bin
+models/**/adapter_config.json
+*.bin
+*.safetensors
+
+# Keep model directory structure but not the weights
+!models/.gitkeep
+
+# Training outputs
+outputs/
+runs/
+logs/
+wandb/
+*.log
+
+# Data (keep structure but not actual data files)
+data/raw/*
+data/processed/*
+data/synthetic/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/synthetic/.gitkeep
+*.jsonl
+*.json
+!configs/*.json
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+
+# HuggingFace cache
+.cache/
+huggingface/
+
+# vLLM cache
+.vllm_cache/

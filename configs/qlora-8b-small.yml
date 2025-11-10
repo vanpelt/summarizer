@@ -1,0 +1,80 @@
+# Axolotl QLoRA Configuration for Qwen3-8B (Smaller Memory Footprint)
+# Use for running more concurrent training jobs
+# Memory usage: ~6-8GB per job
+
+# Inherits most settings from base config
+# This is a lighter variant for maximum concurrency
+
+base_model: Qwen/Qwen3-8B
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+
+chat_template: qwen3
+
+# QLoRA settings
+adapter: qlora
+load_in_4bit: true
+
+lora_r: 16  # Reduced rank for smaller memory
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - down_proj
+  - up_proj
+
+bnb_config_kwargs:
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+
+# Reduced sequence length for memory efficiency
+sequence_len: 1024
+sample_packing: true
+pad_to_sequence_len: true
+
+# Smaller batches
+micro_batch_size: 1
+gradient_accumulation_steps: 16  # Keep effective batch size = 16
+eval_batch_size: 1
+
+num_epochs: 3
+eval_steps: 100
+save_steps: 200
+logging_steps: 20
+
+learning_rate: 0.0002
+lr_scheduler: cosine
+warmup_steps: 50
+
+optimizer: paged_adamw_8bit
+weight_decay: 0.01
+
+flash_attention: true
+bf16: true
+gradient_checkpointing: true
+
+datasets:
+  - path: data/processed/train.jsonl
+    type: chat_template
+    field_messages: messages
+
+val_set_size: 0.1
+
+output_dir: ./models/qwen3-8b-json-small
+
+save_safetensors: true
+save_total_limit: 2
+
+wandb_project: qwen3-json-finetuning
+wandb_watch: false
+
+special_tokens:
+  pad_token: "<|endoftext|>"
+
+seed: 42
+strict: false

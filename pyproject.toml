@@ -1,0 +1,141 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "summarizer"
+version = "0.1.0"
+description = "Distillation / fine-tuning on DGX Spark for JSON generation with title and git branch names"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = {text = "MIT"}
+keywords = ["llm", "fine-tuning", "qlora", "vllm", "axolotl"]
+
+dependencies = [
+    # Core ML frameworks
+    # Note: For ARM64+CUDA (Grace Hopper), install PyTorch nightly first:
+    # uv pip install --index-url https://download.pytorch.org/whl/nightly/cu128 torch torchvision torchaudio
+    "torch>=2.5.0",
+    "transformers>=4.50.0",
+    "accelerate>=1.2.0",
+    # Training
+    "peft>=0.13.0",
+    "bitsandbytes>=0.44.0",
+    # Note: Axolotl requires specific PyTorch versions, install separately
+    # "axolotl>=0.6.0",
+    # Inference
+    # Note: For ARM64, vLLM must be built from source - see README
+    "vllm>=0.8.5",  # Build from source for ARM64
+    # API & Web
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "httpx>=0.28.0",
+    # Data & Validation
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    # CLI
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "anthropic>=0.40.0", # For synthetic data generation
+    "openai>=1.0.0", # For OpenAI-based synthetic data generation
+    "datasets>=3.2.0",
+    "jsonlines>=4.0.0",
+    # Monitoring
+    "wandb>=0.18.0",
+    "tensorboard>=2.18.0",
+]
+
+[project.optional-dependencies]
+# Development dependencies
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "jupyter>=1.0.0",
+    "ipykernel>=6.29.0",
+    "black>=24.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "setuptools_scm>=9.2.2",
+    "packaging>=24.2",
+]
+
+[project.scripts]
+finetune-generate = "src.cli.generate:cli"
+finetune-serve = "src.cli.serve:cli"
+finetune-data = "scripts.data.generate_synthetic:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "scripts*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311', 'py312']
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "N",  # pep8-naming
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --cov=src --cov-report=term-missing"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu130", marker = "platform_machine == 'aarch64'" },
+]
+torchvision = [
+  { index = "pytorch-cu130", marker = "platform_machine == 'aarch64'" },
+]
+torchaudio = [
+  { index = "pytorch-cu130", marker = "platform_machine == 'aarch64'" },
+]
+vllm = { path = "../vllm" }
+
+[dependency-groups]
+dev = [
+    "groq>=0.33.0",
+    "ipython>=8.37.0",
+]
+
+# Override vLLM's torch dependency to use PyTorch nightly
+[tool.uv]
+override-dependencies = [
+  "torch>=2.9.0",  # Allow PyTorch nightly (2.10.0) even though vLLM pins to 2.9.0
+]
+no-build-isolation-package = ["vllm"]  # Disable build isolation for vLLM to access torch
+environments = ["platform_machine == 'aarch64'"]  # Only resolve for ARM64 (DGX Spark)
+
+[tool.uv.extra-build-dependencies]
+vllm = ["setuptools_scm"]

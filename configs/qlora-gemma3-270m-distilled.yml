@@ -1,0 +1,99 @@
+# Axolotl QLoRA Configuration for Gemma3-270M (Distilled Student Model)
+# Fine-tuning on teacher-generated outputs from Gemma3-27B
+# This config uses the enhanced dataset with teacher model outputs
+
+# Base model configuration
+base_model: google/gemma-3-270m-it
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+
+# Chat template for Gemma3
+chat_template: gemma
+
+# QLoRA adapter settings
+adapter: qlora
+load_in_4bit: true
+
+# LoRA hyperparameters
+lora_r: 64
+lora_alpha: 128
+lora_dropout: 0.1
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - down_proj
+  - up_proj
+
+# Quantization configuration
+bnb_config_kwargs:
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+
+# Training hyperparameters
+sequence_len: 2048
+sample_packing: true
+pad_to_sequence_len: true
+
+# Batch size and gradient accumulation
+micro_batch_size: 8
+gradient_accumulation_steps: 4
+eval_batch_size: 8
+
+# Training epochs and evaluation
+num_epochs: 5
+eval_steps: 25
+save_steps: 50
+logging_steps: 5
+
+# Learning rate and scheduler
+learning_rate: 0.0003
+lr_scheduler: cosine
+warmup_steps: 50
+
+# Optimizer
+optimizer: paged_adamw_8bit
+weight_decay: 0.01
+
+# Performance optimizations
+flash_attention: true
+bf16: true
+tf32: false
+gradient_checkpointing: true
+
+# Data configuration - using TEACHER-GENERATED outputs
+datasets:
+  - path: data/gpt5nano/train_teacher.jsonl  # Teacher outputs
+    type: chat_template
+    field_messages: messages
+
+# Validation dataset (original)
+test_datasets:
+  - path: data/gpt5nano/val.jsonl
+    type: chat_template
+    field_messages: messages
+
+# Output configuration
+output_dir: ./models/gemma3-270m-distilled-v1
+
+# Saves
+save_safetensors: true
+save_total_limit: 3
+
+# Weights & Biases logging
+wandb_project: summarizer-distillation
+wandb_entity: null
+wandb_watch: false
+wandb_log_model: checkpoint
+wandb_run_id: null
+
+# Special tokens
+special_tokens:
+  pad_token: "<pad>"
+
+# Misc
+seed: 42
+strict: false
