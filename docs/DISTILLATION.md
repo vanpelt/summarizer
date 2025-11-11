@@ -147,11 +147,225 @@ Typical performance hierarchy:
 | Student-Distilled (270M) | ~85-90% | 100x | 1GB |
 | Student-Baseline (270M) | ~75-80% | 100x | 1GB |
 
-## Phase 2: RL-based Distillation
+## Phase 2: RL-based Distillation (DPO Implementation)
 
-Once Phase 1 is working, we can explore RL methods:
+Once Phase 1 is working, we can use DPO to further refine the student model. This implementation uses TRL (Transformers Reinforcement Learning) with Direct Preference Optimization.
 
-### Option A: OpenPipe
+### What is DPO?
+
+DPO (Direct Preference Optimization) is a simpler alternative to RLHF that:
+- Trains the model to prefer high-quality outputs (teacher) over lower-quality ones (student baseline)
+- Doesn't require a separate reward model
+- More stable and easier to tune than PPO
+- Typically gives 5-10% additional improvement over Phase 1
+
+### Implementation Steps
+
+#### Step 1: Generate DPO Preference Dataset
+
+You have two options:
+
+**Option A: Use existing prompts only (faster)**
+
+```bash
+# Make sure Ollama is running with the teacher model
+ollama pull gemma3:27b
+
+# Generate preference dataset from existing training data
+just generate-dpo-dataset \
+  gemma3:27b \
+  models/gemma3-270m-student-unsloth-v1 \
+  data/gpt5nano/train.jsonl \
+  data/gpt5nano/train_dpo.jsonl
+```
+
+This will:
+- Use prompts from your existing training data (~432 examples)
+- Generate outputs from both teacher (via Ollama) and student
+- Create preference pairs in TRL format
+- Save to `data/gpt5nano/train_dpo.jsonl`
+- Take ~10-15 minutes
+
+**Option B: Extend with synthetic prompts (recommended for better performance)**
+
+```bash
+# Generate extended dataset with 500 additional synthetic prompts
+just generate-dpo-extended \
+  gemma3:27b \
+  models/gemma3-270m-student-unsloth-v1 \
+  500 \
+  data/gpt5nano/train_dpo_extended.jsonl
+```
+
+This will:
+1. Load existing prompts from `data/gpt5nano/train.jsonl` (~432 examples)
+2. Generate 500 new synthetic prompts using Claude API (requires `ANTHROPIC_API_KEY`)
+3. Generate teacher and student outputs for ALL prompts (existing + synthetic)
+4. Create extended preference dataset (~932 total examples)
+5. Save to `data/gpt5nano/train_dpo_extended.jsonl`
+6. Take ~30-40 minutes for the full dataset
+
+**Why use synthetic data?**
+- **More training examples**: ~2x the data (432 → 932 examples)
+- **Better generalization**: Diverse synthetic prompts cover more edge cases
+- **Improved performance**: Typically gives 2-3% additional quality improvement
+- **Cost-effective**: Reuses existing teacher/student models
+
+**JSON Schema Enforcement:**
+
+Both scripts enforce valid JSON output by default:
+- **Teacher (Ollama)**: Uses JSON schema constraint for guaranteed valid output
+- **Student (Unsloth)**: Uses greedy decoding (temperature=0) for reliable JSON
+
+This ensures your training data matches production inference where you'll use:
+```bash
+ollama run your-model --format json 'Fix the login bug'
+```
+
+See [JSON_ENFORCEMENT.md](./JSON_ENFORCEMENT.md) for details and customization.
+
+**Dataset Format:**
+```json
+{
+  "prompt": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}],
+  "chosen": "Teacher's high-quality output",
+  "rejected": "Student's lower-quality output"
+}
+```
+
+#### Step 2: Train with DPO
+
+```bash
+# Train DPO model (auto-increments version)
+# Use standard dataset:
+just train-dpo \
+  models/gemma3-270m-student-unsloth-v1 \
+  data/gpt5nano/train_dpo.jsonl
+
+# OR use extended dataset (recommended):
+just train-dpo \
+  models/gemma3-270m-student-unsloth-v1 \
+  data/gpt5nano/train_dpo_extended.jsonl
+```
+
+This will:
+- Load the base student model
+- Create a reference model (frozen copy)
+- Add LoRA adapters for training
+- Train using DPO loss to prefer teacher outputs
+- Auto-increment version: `gemma3-270m-student-dpo-v1`, `v2`, etc.
+- Save adapter and merged model
+- Take ~30-60 minutes for 3 epochs
+
+**Auto-versioning:**
+The script automatically finds existing DPO models and increments:
+- First run: `gemma3-270m-student-dpo-v1`
+- Second run: `gemma3-270m-student-dpo-v2`
+- And so on...
+
+#### Step 3: Export and Test
+
+```bash
+# Export to GGUF
+just export-gguf \
+  models/gemma3-270m-student-dpo-v1 \
+  gemma3-270m-student-dpo-v1 \
+  Q4_K_M
+
+# Import to Ollama
+just ollama-import gemma3-270m-student-dpo-v1
+
+# Test it
+ollama run gemma3-270m-student-dpo-v1 'Fix the login bug'
+```
+
+### DPO Hyperparameters
+
+Key hyperparameters in `train_dpo.py`:
+
+#### Training Settings
+- `--learning-rate`: 5e-5 (lower than SFT, DPO is sensitive to LR)
+- `--epochs`: 3 (usually 1-3 epochs sufficient)
+- `--batch-size`: 4 (per device)
+- `--grad-accum`: 4 (effective batch size = 16)
+
+#### DPO Specific
+- `--beta`: 0.1 (KL divergence penalty weight)
+  - Higher beta (0.2-0.5): More conservative, stays closer to base model
+  - Lower beta (0.05-0.1): More aggressive learning from preferences
+  - Start with 0.1 and adjust based on results
+
+#### LoRA Settings
+- `--lora-r`: 64 (rank)
+- `--lora-alpha`: 128 (scaling factor)
+
+### Expected Results
+
+Typical performance improvement:
+
+| Model | Quality | Speed | Memory | Improvement |
+|-------|---------|-------|--------|-------------|
+| Teacher (27B) | 100% | 1x | 54GB | Baseline |
+| Student-Phase1 (270M) | ~85% | 100x | 1GB | - |
+| Student-DPO (270M) | ~90-92% | 100x | 1GB | +5-7% over Phase1 |
+
+### Troubleshooting
+
+#### DPO training is unstable
+- **Lower learning rate**: Try 2e-5 or 1e-5
+- **Increase beta**: Try 0.2 or 0.3 for more stability
+- **Reduce epochs**: Try 1-2 epochs instead of 3
+
+#### Model quality degrades
+- **Beta too low**: Increase to 0.2-0.3
+- **Learning rate too high**: Lower to 2e-5
+- **Overfitting**: Train for fewer epochs or add more dropout
+
+#### Out of memory
+- **Reduce batch size**: Try `--batch-size 2`
+- **Increase grad accumulation**: Keep effective batch size at 8-16
+- **Reduce max length**: Try `--max-length 1024`
+
+### Monitoring with Weights & Biases
+
+Training automatically logs to W&B:
+- DPO loss (should decrease)
+- Reward accuracy (chosen > rejected)
+- KL divergence (should stay < 1.0)
+- Reward margins (difference between chosen/rejected scores)
+
+Disable with `--no-wandb` flag.
+
+### Advanced: Iterative DPO
+
+For even better results, iterate DPO training:
+
+```bash
+# Round 1: DPO from Phase 1 student
+just train-dpo \
+  models/gemma3-270m-student-unsloth-v1 \
+  data/gpt5nano/train_dpo.jsonl
+# Creates: gemma3-270m-student-dpo-v1
+
+# Round 2: Generate new preferences with DPO-v1 as student
+just generate-dpo-dataset \
+  gemma3:27b \
+  models/gemma3-270m-student-dpo-v1 \
+  data/gpt5nano/train.jsonl \
+  data/gpt5nano/train_dpo_round2.jsonl
+
+# Round 2: Train DPO on new preferences
+just train-dpo \
+  models/gemma3-270m-student-dpo-v1 \
+  data/gpt5nano/train_dpo_round2.jsonl
+# Creates: gemma3-270m-student-dpo-v2
+```
+
+Each iteration typically gives 1-3% improvement until convergence (usually 2-3 rounds).
+
+### Alternative Options
+
+#### Option A: OpenPipe
 
 OpenPipe is a managed service for model distillation with RL.
 
@@ -175,39 +389,16 @@ openpipe distill \
   --eval data/gpt5nano/val.jsonl
 ```
 
-### Option B: TRL (Transformers Reinforcement Learning)
+#### Option C: Custom PPO Implementation
 
-Open-source library from HuggingFace for RL fine-tuning.
-
-**Methods:**
-- **DPO (Direct Preference Optimization)**: Simpler, works well
-- **PPO (Proximal Policy Optimization)**: More powerful, more complex
-
-**Example:**
-```python
-from trl import DPOTrainer
-
-# Create preference dataset: teacher output (chosen) vs student output (rejected)
-# Train student to prefer teacher-like outputs
-trainer = DPOTrainer(
-    model=student_model,
-    ref_model=ref_student_model,
-    train_dataset=preference_dataset,
-    beta=0.1,  # KL penalty
-)
-trainer.train()
-```
-
-### Option C: Custom Implementation
-
-Implement custom RL loop:
+Implement custom PPO RL loop:
 
 1. **Student generates** output for prompt
 2. **Teacher scores** student output (reward)
-3. **Student updates** to maximize reward
+3. **Student updates** to maximize reward via PPO
 4. Repeat
 
-This gives maximum control but requires more engineering.
+This gives maximum control but requires more engineering and is more complex than DPO.
 
 ## Next Steps
 

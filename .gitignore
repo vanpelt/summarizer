@@ -75,3 +75,6 @@ huggingface/
 
 # vLLM cache
 .vllm_cache/
+
+# llama.cpp
+llama.cpp/

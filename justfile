@@ -123,6 +123,10 @@ serve-docker MODEL="Qwen/Qwen3-8B" PORT="8000" GPU_MEM="0.5":
 build-unsloth:
     docker build -f Dockerfile.unsloth -t unsloth-dgx-spark .
 
+# Clean dataset: remove continuation prompts and update system prompt
+clean-dataset INPUT="data/gpt5nano/train.jsonl" OUTPUT="data/gpt5nano/train_cleaned.jsonl":
+    uv run --no-project python scripts/data/clean_dataset.py --input {{INPUT}} --output {{OUTPUT}}
+
 # Convert dataset to Unsloth format (conversations instead of messages)
 convert-data-unsloth MERGE="--merge-system":
     uv run python scripts/data/convert_to_unsloth_format.py {{MERGE}}
@@ -143,6 +147,176 @@ train-multi PRESET="default":
 train-trl:
     ./fix.sh uv run python scripts/training/train_trl_gemma3.py
 
+# Generate DPO preference dataset (Phase 2 distillation)
+# Configure via environment variables:
+#   TEACHER=gpt-4o-mini BATCH=4 just generate-dpo-dataset
+#   RESUME=1 just generate-dpo-dataset  # Resume from last checkpoint
+generate-dpo-dataset:
+    #!/usr/bin/env bash
+    TEACHER="{{ env('TEACHER', 'gemma3:27b') }}"
+    STUDENT="{{ env('STUDENT', 'models/gemma3-270m-student-unsloth-v1') }}"
+    INPUT="{{ env('INPUT', 'data/gpt5nano/train.jsonl') }}"
+    OUTPUT="{{ env('OUTPUT', 'data/gpt5nano/train_dpo.jsonl') }}"
+    BATCH="{{ env('BATCH', '2') }}"
+    RESUME="{{ env('RESUME', '') }}"
+
+    echo "Generating DPO preference dataset..."
+    echo "Teacher: $TEACHER"
+    echo "Student: $STUDENT"
+    echo "Input: $INPUT"
+    echo "Output: $OUTPUT"
+    echo "Batch size: $BATCH (use 1-2 for stability, 4-8 for speed if you have VRAM)"
+
+    RESUME_FLAG=""
+    if [ -n "$RESUME" ]; then
+        RESUME_FLAG="--resume"
+        echo "Resume mode: ON"
+    fi
+
+    uv run --no-project python scripts/distillation/generate_dpo_dataset.py \
+        --teacher-backend auto \
+        --teacher-model "$TEACHER" \
+        --student-model "$STUDENT" \
+        --input "$INPUT" \
+        --output "$OUTPUT" \
+        --temperature 0.7 \
+        --batch-size "$BATCH" \
+        --save-every 10 \
+        --ollama-base-url http://localhost:11434 \
+        $RESUME_FLAG
+
+# Generate extended DPO dataset with synthetic prompts (Phase 2 distillation)
+# Configure via environment variables:
+#   NUM_SYNTHETIC=1000 BATCH=8 just generate-dpo-extended
+#   RESUME=1 just generate-dpo-extended  # Resume from checkpoint
+generate-dpo-extended:
+    #!/usr/bin/env bash
+    TEACHER="{{ env('TEACHER', 'gemma3:27b') }}"
+    STUDENT="{{ env('STUDENT', 'models/gemma3-270m-student-unsloth-v1') }}"
+    NUM_SYNTHETIC="{{ env('NUM_SYNTHETIC', '500') }}"
+    EXISTING_DATA="{{ env('EXISTING_DATA', 'data/gpt5nano/train.jsonl') }}"
+    OUTPUT="{{ env('OUTPUT', 'data/gpt5nano/train_dpo_extended.jsonl') }}"
+    TEMPERATURE="{{ env('TEMPERATURE', '0.7') }}"
+    BATCH="{{ env('BATCH', '2') }}"
+    RESUME="{{ env('RESUME', '') }}"
+
+    echo "Generating extended DPO preference dataset with synthetic prompts..."
+    echo "Teacher: $TEACHER"
+    echo "Student: $STUDENT"
+    echo "Existing data: $EXISTING_DATA"
+    echo "Synthetic prompts: $NUM_SYNTHETIC"
+    echo "Output: $OUTPUT"
+    echo "Temperature: $TEMPERATURE"
+    echo "Batch size: $BATCH (for DPO generation)"
+
+    RESUME_FLAG=""
+    if [ -n "$RESUME" ]; then
+        RESUME_FLAG="--resume"
+        echo "Resume mode: ON"
+    fi
+
+    uv run --no-project python scripts/distillation/extend_dpo_with_synthetic.py \
+        --existing-data "$EXISTING_DATA" \
+        --num-synthetic "$NUM_SYNTHETIC" \
+        --teacher-backend auto \
+        --teacher-model "$TEACHER" \
+        --student-model "$STUDENT" \
+        --output "$OUTPUT" \
+        --temperature "$TEMPERATURE" \
+        --batch-size "$BATCH" \
+        --save-every 10 \
+        --ollama-base-url http://localhost:11434 \
+        $RESUME_FLAG
+
+# Generate validation DPO preference dataset
+# Configure via environment variables:
+#   TEACHER=gpt-4o-mini just generate-dpo-val
+generate-dpo-val:
+    #!/usr/bin/env bash
+    TEACHER="{{ env('TEACHER', 'gemma3:27b') }}"
+    STUDENT="{{ env('STUDENT', 'models/gemma3-270m-student-unsloth-v1') }}"
+    INPUT="{{ env('INPUT', 'data/gpt5nano/val.jsonl') }}"
+    OUTPUT="{{ env('OUTPUT', 'data/gpt5nano/val_dpo.jsonl') }}"
+    BATCH="{{ env('BATCH', '2') }}"
+
+    echo "Generating validation DPO preference dataset..."
+    echo "Teacher: $TEACHER"
+    echo "Student: $STUDENT"
+    echo "Input: $INPUT"
+    echo "Output: $OUTPUT"
+    echo "Batch size: $BATCH"
+
+    uv run --no-project python scripts/distillation/generate_dpo_dataset.py \
+        --teacher-backend auto \
+        --teacher-model "$TEACHER" \
+        --student-model "$STUDENT" \
+        --input "$INPUT" \
+        --output "$OUTPUT" \
+        --temperature 0.7 \
+        --batch-size "$BATCH" \
+        --save-every 10 \
+        --ollama-base-url http://localhost:11434
+
+# Inspect DPO preference dataset
+inspect-dpo-dataset DATASET="data/gpt5nano/train_dpo_extended.jsonl":
+    uv run --no-project python scripts/distillation/inspect_dpo_dataset.py {{DATASET}}
+
+# Train with DPO (Phase 2 distillation - RL-based refinement)
+# Configure via environment variables:
+#   BASE=models/my-model DATASET=data/my_dpo.jsonl just train-dpo
+#   VAL_DATASET=data/gpt5nano/val_dpo.jsonl just train-dpo  # Use DPO-formatted val set
+train-dpo:
+    #!/usr/bin/env bash
+    BASE="{{ env('BASE', 'models/gemma3-270m-student-unsloth-v1_merged') }}"
+    DATASET="{{ env('DATASET', 'data/gpt5nano/train_dpo.jsonl') }}"
+    VAL_DATASET="{{ env('VAL_DATASET', 'data/gpt5nano/val_dpo.jsonl') }}"
+    IMAGE="{{ env('IMAGE', 'spark-unsloth') }}"
+    BATCH_SIZE="{{ env('BATCH_SIZE', '4') }}"
+    GRAD_ACCUM="{{ env('GRAD_ACCUM', '4') }}"
+    LR="{{ env('LR', '5e-5') }}"
+    EPOCHS="{{ env('EPOCHS', '3') }}"
+    BETA="{{ env('BETA', '0.1') }}"
+    LORA_R="{{ env('LORA_R', '64') }}"
+    LORA_ALPHA="{{ env('LORA_ALPHA', '128') }}"
+
+    echo "Training with DPO (Direct Preference Optimization) in Docker..."
+    echo "Base model: $BASE"
+    echo "Train dataset: $DATASET"
+    echo "Val dataset: $VAL_DATASET"
+    echo "Batch size: $BATCH_SIZE, Grad accum: $GRAD_ACCUM"
+    echo "LR: $LR, Epochs: $EPOCHS, Beta: $BETA"
+    echo "LoRA r: $LORA_R, alpha: $LORA_ALPHA"
+
+    docker run --rm \
+        --gpus=all \
+        --net=host \
+        --ipc=host \
+        --ulimit memlock=-1 \
+        --ulimit stack=67108864 \
+        -v $(pwd):/workspace \
+        -v ~/.netrc:/root/.netrc:ro \
+        -v ~/.cache/uv:/root/.cache/uv \
+        -v ~/.cache/huggingface:/root/.cache/huggingface \
+        -w /workspace \
+        -e WANDB_PROJECT=summarizer \
+        -e WANDB_API_KEY=${WANDB_API_KEY:-} \
+        -e OPENAI_API_KEY=${OPENAI_API_KEY:-} \
+        -e HF_TOKEN=${HF_TOKEN:-} \
+        -e CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
+        -e UV_NO_PROJECT=1 \
+        $IMAGE \
+        python scripts/distillation/train_dpo.py \
+            --base-model "$BASE" \
+            --dataset "$DATASET" \
+            --val-dataset "$VAL_DATASET" \
+            --batch-size "$BATCH_SIZE" \
+            --grad-accum "$GRAD_ACCUM" \
+            --learning-rate "$LR" \
+            --epochs "$EPOCHS" \
+            --beta "$BETA" \
+            --lora-r "$LORA_R" \
+            --lora-alpha "$LORA_ALPHA"
+
 # Run Unsloth Docker container (interactive shell)
 unsloth-shell IMAGE="spark-unsloth":
     #!/usr/bin/env bash
@@ -158,9 +332,12 @@ unsloth-shell IMAGE="spark-unsloth":
         -v ~/.cache/uv:/root/.cache/uv \
         -v ~/.cache/huggingface:/root/.cache/huggingface \
         -w /workspace \
+        -e ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-} \
+        -e OPENAI_API_KEY=${OPENAI_API_KEY:-} \
         -e WANDB_API_KEY=${WANDB_API_KEY:-} \
         -e HF_TOKEN=${HF_TOKEN:-} \
         -e CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
+        -e UV_NO_PROJECT=1 \
         {{IMAGE}} \
         bash
 
@@ -181,8 +358,10 @@ unsloth-train IMAGE="spark-unsloth":
         -w /workspace \
         -e WANDB_PROJECT=summarizer \
         -e WANDB_API_KEY=${WANDB_API_KEY:-} \
+        -e OPENAI_API_KEY=${OPENAI_API_KEY:-} \
         -e HF_TOKEN=${HF_TOKEN:-} \
         -e CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
+        -e UV_NO_PROJECT=1 \
         {{IMAGE}} \
         bash -c "rm -rf /workspace/unsloth_compiled_cache /tmp/torchinductor_* && python scripts/training/train_unsloth_gemma3.py"
 
@@ -199,30 +378,36 @@ export-gguf MODEL="./models/gemma3-270m-student-unsloth-v1" NAME="gemma3-summary
         python scripts/export/export_to_gguf.py --model-path {{MODEL}} --output-name {{NAME}} --quantization {{QUANT}}
 
 # Import GGUF model into Ollama
-ollama-import NAME="gemma3-summary-v1" GGUF="":
+ollama-import NAME="gemma3-summary-v1":
     #!/usr/bin/env bash
     echo "Importing {{NAME}} into Ollama..."
 
-    # If GGUF file specified, use it; otherwise find any .gguf file
-    if [ -n "{{GGUF}}" ]; then
-        GGUF_FILE="{{GGUF}}"
-    else
-        GGUF_FILE=$(ls *.gguf 2>/dev/null | head -n 1)
-    fi
-
-    if [ -z "$GGUF_FILE" ] || [ ! -f "$GGUF_FILE" ]; then
-        echo "Error: GGUF file not found."
-        echo "Available GGUF files:"
-        ls -lh *.gguf 2>/dev/null || echo "  (none)"
+    # Check if the model directory exists
+    MODEL_DIR="models/gguf/{{NAME}}"
+    if [ ! -d "$MODEL_DIR" ]; then
+        echo "Error: Model directory not found: $MODEL_DIR"
         echo ""
-        echo "Run 'just export-gguf' to create one, or specify: just ollama-import NAME GGUF=file.gguf"
+        echo "Available models:"
+        ls -d models/gguf/*/ 2>/dev/null || echo "  (none)"
+        echo ""
+        echo "Run 'just export-gguf' to create one"
         exit 1
     fi
 
-    echo "Using GGUF file: $GGUF_FILE"
+    # Check if Modelfile exists
+    if [ ! -f "$MODEL_DIR/Modelfile" ]; then
+        echo "Error: Modelfile not found in $MODEL_DIR"
+        exit 1
+    fi
+
+    echo "Using model directory: $MODEL_DIR"
     echo "Creating Ollama model: {{NAME}}"
 
+    # Import from the model directory
+    cd "$MODEL_DIR"
     ollama create {{NAME}} -f Modelfile
+    cd - > /dev/null
+
     echo ""
     echo "✅ Model imported as: {{NAME}}"
     echo "Test with: ollama run {{NAME}} 'Fix the login bug'"

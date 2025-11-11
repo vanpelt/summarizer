@@ -27,6 +27,8 @@ dependencies = [
     "trl>=0.23.0",
     "unsloth==2025.10.10",
     "unsloth-zoo==2025.10.12",
+    "openai",
+    "anthropic",
     "wandb>=0.21.3",
     "xformers",
 ]

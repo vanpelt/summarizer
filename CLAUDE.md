@@ -85,6 +85,17 @@ The `pyproject.toml` configures uv to:
 - Override PyTorch version constraints
 - Disable build isolation for vLLM
 
+#### UV and Virtual Environments
+
+If uv warns about refusing `VIRTUAL_ENV` and suggests using `--active`, add this to your `.env`:
+
+```bash
+# Make uv respect active virtual environment by default
+UV_PROJECT_ENVIRONMENT=.venv
+```
+
+This tells uv to use the `.venv` directory as the project environment, eliminating the need for `--active` flag on every command.
+
 ## Project Structure
 
 ```
