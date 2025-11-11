@@ -1,0 +1,5 @@
+build:
+    docker build -t spark-unsloth . --load
+
+run:
+    docker run --gpus all --ulimit memlock=-1 -it --ulimit stack=67108864 -it --entrypoint /usr/bin/bash  -v "$PWD"/dgx-spark-unsloth:/workspace -p 8888:8888  --rm spark-unsloth

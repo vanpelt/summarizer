@@ -120,6 +120,13 @@ serve-docker MODEL="Qwen/Qwen3-8B" PORT="8000" GPU_MEM="0.5":
         --no-enable-chunked-prefill \
         --trust-remote-code
 
+build-unsloth:
+    docker build -f Dockerfile.unsloth -t unsloth-dgx-spark .
+
+# Convert dataset to Unsloth format (conversations instead of messages)
+convert-data-unsloth MERGE="--merge-system":
+    uv run python scripts/data/convert_to_unsloth_format.py {{MERGE}}
+
 # Generate synthetic training data
 generate-data NUM="1000":
     uv run python scripts/data/generate_synthetic.py --num-examples {{NUM}}
@@ -131,6 +138,94 @@ train CONFIG="configs/qlora-8b.yml":
 # Train multiple models concurrently
 train-multi PRESET="default":
     uv run python scripts/training/train_multi.py --preset {{PRESET}}
+
+# Train using TRL directly (alternative to Axolotl, may work better on GB10)
+train-trl:
+    ./fix.sh uv run python scripts/training/train_trl_gemma3.py
+
+# Run Unsloth Docker container (interactive shell)
+unsloth-shell IMAGE="spark-unsloth":
+    #!/usr/bin/env bash
+    echo "Starting Unsloth Docker container (interactive)..."
+    docker run -it --rm \
+        --gpus=all \
+        --net=host \
+        --ipc=host \
+        --ulimit memlock=-1 \
+        --ulimit stack=67108864 \
+        -v $(pwd):/workspace \
+        -v ~/.netrc:/root/.netrc:ro \
+        -v ~/.cache/uv:/root/.cache/uv \
+        -v ~/.cache/huggingface:/root/.cache/huggingface \
+        -w /workspace \
+        -e WANDB_API_KEY=${WANDB_API_KEY:-} \
+        -e HF_TOKEN=${HF_TOKEN:-} \
+        -e CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
+        {{IMAGE}} \
+        bash
+
+# Train with Unsloth in Docker (recommended for GB10)
+unsloth-train IMAGE="spark-unsloth":
+    #!/usr/bin/env bash
+    echo "Starting Unsloth training in Docker..."
+    docker run --rm \
+        --gpus=all \
+        --net=host \
+        --ipc=host \
+        --ulimit memlock=-1 \
+        --ulimit stack=67108864 \
+        -v $(pwd):/workspace \
+        -v ~/.netrc:/root/.netrc:ro \
+        -v ~/.cache/uv:/root/.cache/uv \
+        -v ~/.cache/huggingface:/root/.cache/huggingface \
+        -w /workspace \
+        -e WANDB_PROJECT=summarizer \
+        -e WANDB_API_KEY=${WANDB_API_KEY:-} \
+        -e HF_TOKEN=${HF_TOKEN:-} \
+        -e CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
+        {{IMAGE}} \
+        bash -c "rm -rf /workspace/unsloth_compiled_cache /tmp/torchinductor_* && python scripts/training/train_unsloth_gemma3.py"
+
+# Export trained model to GGUF for Ollama
+export-gguf MODEL="./models/gemma3-270m-student-unsloth-v1" NAME="gemma3-summary-v1" QUANT="Q4_K_M" IMAGE="spark-unsloth":
+    #!/usr/bin/env bash
+    echo "Exporting model to GGUF..."
+    docker run --rm \
+        --gpus=all \
+        -v $(pwd):/workspace \
+        -v ~/.cache/huggingface:/root/.cache/huggingface \
+        -w /workspace \
+        {{IMAGE}} \
+        python scripts/export/export_to_gguf.py --model-path {{MODEL}} --output-name {{NAME}} --quantization {{QUANT}}
+
+# Import GGUF model into Ollama
+ollama-import NAME="gemma3-summary-v1" GGUF="":
+    #!/usr/bin/env bash
+    echo "Importing {{NAME}} into Ollama..."
+
+    # If GGUF file specified, use it; otherwise find any .gguf file
+    if [ -n "{{GGUF}}" ]; then
+        GGUF_FILE="{{GGUF}}"
+    else
+        GGUF_FILE=$(ls *.gguf 2>/dev/null | head -n 1)
+    fi
+
+    if [ -z "$GGUF_FILE" ] || [ ! -f "$GGUF_FILE" ]; then
+        echo "Error: GGUF file not found."
+        echo "Available GGUF files:"
+        ls -lh *.gguf 2>/dev/null || echo "  (none)"
+        echo ""
+        echo "Run 'just export-gguf' to create one, or specify: just ollama-import NAME GGUF=file.gguf"
+        exit 1
+    fi
+
+    echo "Using GGUF file: $GGUF_FILE"
+    echo "Creating Ollama model: {{NAME}}"
+
+    ollama create {{NAME}} -f Modelfile
+    echo ""
+    echo "✅ Model imported as: {{NAME}}"
+    echo "Test with: ollama run {{NAME}} 'Fix the login bug'"
 
 # Run tests
 test:

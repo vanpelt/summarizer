@@ -7,7 +7,7 @@ name = "summarizer"
 version = "0.1.0"
 description = "Distillation / fine-tuning on DGX Spark for JSON generation with title and git branch names"
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10,<3.13"
 license = {text = "MIT"}
 keywords = ["llm", "fine-tuning", "qlora", "vllm", "axolotl"]
 
@@ -21,18 +21,15 @@ dependencies = [
     # Training
     "peft>=0.13.0",
     "bitsandbytes>=0.44.0",
-    # Note: Axolotl requires specific PyTorch versions, install separately
-    # "axolotl>=0.6.0",
     # Inference
     # Note: For ARM64, vLLM must be built from source - see README
-    "vllm>=0.8.5",  # Build from source for ARM64
     # API & Web
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "httpx>=0.28.0",
     # Data & Validation
-    "pydantic>=2.10.0",
-    "pydantic-settings>=2.6.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
     # CLI
     "click>=8.1.0",
     "rich>=13.0.0",
@@ -44,22 +41,16 @@ dependencies = [
     "jsonlines>=4.0.0",
     # Monitoring
     "wandb>=0.18.0",
-    "tensorboard>=2.18.0",
+    "weave>=0.51.0",
 ]
 
 [project.optional-dependencies]
 # Development dependencies
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=6.0.0",
-    "jupyter>=1.0.0",
-    "ipykernel>=6.29.0",
-    "black>=24.0.0",
-    "ruff>=0.8.0",
-    "mypy>=1.13.0",
-    "setuptools_scm>=9.2.2",
-    "packaging>=24.2",
+vllm = [
+    "vllm"
+]
+axolotl = [
+    "axolotl"
 ]
 
 [project.scripts]
@@ -124,7 +115,17 @@ torchaudio = [
 vllm = { path = "../vllm" }
 
 [dependency-groups]
-dev = [
+vllm = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "marimo>=0.17.0",
+    "ipykernel>=6.29.0",
+    "black>=24.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "setuptools_scm>=9.2.2",
+    "packaging>=24.2",
     "groq>=0.33.0",
     "ipython>=8.37.0",
 ]
@@ -133,9 +134,16 @@ dev = [
 [tool.uv]
 override-dependencies = [
   "torch>=2.9.0",  # Allow PyTorch nightly (2.10.0) even though vLLM pins to 2.9.0
+  "packaging>=24.2",
+  "transformers>=4.56.0",
+  "mistral-common[audio]>=1.8.5",
+  "pydantic>=2.12.0",
+  "triton>=3.5.0",
+  "xformers>=0.0.32.post2"
 ]
 no-build-isolation-package = ["vllm"]  # Disable build isolation for vLLM to access torch
 environments = ["platform_machine == 'aarch64'"]  # Only resolve for ARM64 (DGX Spark)
 
 [tool.uv.extra-build-dependencies]
 vllm = ["setuptools_scm"]
+xformers = ["torch"]

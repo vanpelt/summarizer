@@ -1,0 +1,59 @@
+[project]
+name = "unsloth-codebase"
+version = "0.1.0"
+description = "the minimal self-hosted codding assistant"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=1.11.0",
+    "bitsandbytes>=0.48.1",
+    "cut-cross-entropy>=25.1.1",
+    "datasets>=3.4.1,<4.0.0",
+    "dotenv>=0.9.9",
+    "hf-transfer>=0.1.9",
+    "huggingface-hub>=0.36.0",
+    "ipykernel>=7.1.0",
+    "ipywidgets>=8.1.7",
+    "jupyter>=1.1.1",
+    "jupyterlab>=4.4.10",
+    "jupyterlab-widgets>=3.0.15",
+    "marimo[recommended]>=0.17.7",
+    "ninja>=1.13.0",
+    "numpy==2.3.4",
+    "peft>=0.17.1",
+    "sentencepiece>=0.2.1",
+    "tqdm>=4.67.1",
+    "transformers>4.55.1,<=4.57.2",
+    "trl>=0.23.0",
+    "unsloth==2025.10.10",
+    "unsloth-zoo==2025.10.12",
+    "wandb>=0.21.3",
+    "xformers",
+]
+
+
+[tool.uv.sources]
+torch = [  
+    { index = "pytorch-cu130", extra = "gpu" },  
+]
+torchvision = [{index="pytorch-cu130"}]
+xformers = {git="https://github.com/johnnynunez/xformers", branch="main"}
+  
+[[tool.uv.index]]  
+name = "pytorch-cu130"  
+url = "https://download.pytorch.org/whl/cu130"  
+explicit = true
+
+[project.optional-dependencies]  
+gpu = [  
+    "torch==2.9.0",  
+    "torchvision==0.24.0"
+]  
+  
+[tool.uv]
+override-dependencies = [
+  "torch; python_version < '0'",
+"triton; python_version <'0'",
+"torchvision; python_version<'0'"
+]
+no-build-isolation-package= ["xformers"]
