@@ -25,6 +25,9 @@ from trl import DPOTrainer, DPOConfig
 from unsloth import FastLanguageModel, is_bfloat16_supported
 import wandb
 
+# Set memory limits early
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512,expandable_segments:True"
+
 
 def find_latest_version(base_name: str, models_dir: Path = Path("models")) -> int:
     """
@@ -237,8 +240,39 @@ def main():
         action="store_true",
         help="Disable Weights & Biases logging"
     )
+    parser.add_argument(
+        "--max-memory-gb",
+        type=float,
+        default=74.0,
+        help="Maximum GPU memory to use in GB (default: 74GB)"
+    )
+    parser.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=None,
+        help="Eval batch size (defaults to train batch size // 2 for memory efficiency)"
+    )
+    parser.add_argument(
+        "--max-eval-samples",
+        type=int,
+        default=100,
+        help="Maximum number of samples to use for evaluation (default: 100)"
+    )
 
     args = parser.parse_args()
+
+    # Set eval batch size if not specified
+    if args.eval_batch_size is None:
+        args.eval_batch_size = max(1, args.batch_size // 2)
+
+    # Calculate memory limits
+    max_memory_bytes = int(args.max_memory_gb * 1024**3)  # Convert GB to bytes
+    # Reserve memory for each model (trainable + reference)
+    # Allocate 60% for trainable model, 30% for reference, 10% for overhead
+    max_memory = {0: f"{int(args.max_memory_gb * 0.9)}GB"}  # 90% of limit for GPU 0
+
+    # Set PyTorch CUDA memory fraction
+    torch.cuda.set_per_process_memory_fraction(args.max_memory_gb / torch.cuda.get_device_properties(0).total_memory * 1024**3)
 
     # Auto-increment version
     output_dir = get_next_version(args.output_base)
@@ -251,6 +285,9 @@ def main():
     print(f"Output model: {output_path}")
     print(f"Dataset: {args.dataset}")
     print(f"Beta (KL penalty): {args.beta}")
+    print(f"Max GPU memory: {args.max_memory_gb}GB")
+    print(f"Train batch size: {args.batch_size}")
+    print(f"Eval batch size: {args.eval_batch_size}")
     print("=" * 70)
 
     # Initialize Weights & Biases
@@ -269,13 +306,14 @@ def main():
             }
         )
 
-    # Load model and tokenizer
+    # Load model and tokenizer with memory limits
     print("\n1. Loading base model...")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.base_model,
         max_seq_length=args.max_length,
         dtype=None,
         load_in_4bit=True,
+        max_memory=max_memory,
     )
 
     # Load reference model for DPO (frozen copy of base model)
@@ -285,6 +323,7 @@ def main():
         max_seq_length=args.max_length,
         dtype=None,
         load_in_4bit=True,
+        max_memory=max_memory,
     )
 
     # Add LoRA adapters to the model (but not ref_model)
@@ -315,6 +354,10 @@ def main():
     eval_dataset = None
     if args.val_dataset.exists():
         val_data = load_jsonl(args.val_dataset)
+        # Limit eval dataset size to prevent OOM
+        if len(val_data) > args.max_eval_samples:
+            print(f"   Limiting eval dataset from {len(val_data)} to {args.max_eval_samples} samples")
+            val_data = val_data[:args.max_eval_samples]
         eval_dataset = format_eval_dataset(val_data, tokenizer)
         print(f"   Formatted {len(eval_dataset)} validation examples")
 
@@ -328,7 +371,7 @@ def main():
         # Training hyperparameters
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.eval_batch_size,  # Use smaller eval batch
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
 
