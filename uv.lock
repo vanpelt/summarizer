@@ -203,6 +203,22 @@ wheels = [
 ]
 
 [[package]]
+name = "altair"
+version = "6.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2", marker = "platform_machine == 'aarch64'" },
+    { name = "jsonschema", marker = "platform_machine == 'aarch64'" },
+    { name = "narwhals", marker = "platform_machine == 'aarch64'" },
+    { name = "packaging", marker = "platform_machine == 'aarch64'" },
+    { name = "typing-extensions", marker = "platform_machine == 'aarch64'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f7/c0/184a89bd5feba14ff3c41cfaf1dd8a82c05f5ceedbc92145e17042eb08a4/altair-6.0.0.tar.gz", hash = "sha256:614bf5ecbe2337347b590afb111929aa9c16c9527c4887d96c9bc7f6640756b4", size = 763834, upload-time = "2025-11-12T08:59:11.519Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/db/33/ef2f2409450ef6daa61459d5de5c08128e7d3edb773fefd0a324d1310238/altair-6.0.0-py3-none-any.whl", hash = "sha256:09ae95b53d5fe5b16987dccc785a7af8588f2dca50de1e7a156efa8a461515f8", size = 795410, upload-time = "2025-11-12T08:59:09.804Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -4536,6 +4552,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate", marker = "platform_machine == 'aarch64'" },
+    { name = "altair", marker = "platform_machine == 'aarch64'" },
     { name = "anthropic", marker = "platform_machine == 'aarch64'" },
     { name = "bitsandbytes", marker = "platform_machine == 'aarch64'" },
     { name = "click", marker = "platform_machine == 'aarch64'" },
@@ -4543,7 +4560,9 @@ dependencies = [
     { name = "fastapi", marker = "platform_machine == 'aarch64'" },
     { name = "httpx", marker = "platform_machine == 'aarch64'" },
     { name = "jsonlines", marker = "platform_machine == 'aarch64'" },
+    { name = "marimo", marker = "platform_machine == 'aarch64'" },
     { name = "openai", marker = "platform_machine == 'aarch64'" },
+    { name = "pandas", marker = "platform_machine == 'aarch64'" },
     { name = "peft", marker = "platform_machine == 'aarch64'" },
     { name = "pydantic", marker = "platform_machine == 'aarch64'" },
     { name = "pydantic-settings", marker = "platform_machine == 'aarch64'" },
@@ -4585,6 +4604,7 @@ vllm = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.2.0" },
+    { name = "altair", specifier = ">=5.0.0" },
     { name = "anthropic", specifier = ">=0.40.0" },
     { name = "axolotl", marker = "extra == 'axolotl'" },
     { name = "bitsandbytes", specifier = ">=0.44.0" },
@@ -4593,7 +4613,9 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "jsonlines", specifier = ">=4.0.0" },
+    { name = "marimo" },
     { name = "openai", specifier = ">=1.0.0" },
+    { name = "pandas", specifier = ">=2.0.0" },
     { name = "peft", specifier = ">=0.13.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },

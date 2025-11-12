@@ -344,6 +344,7 @@ unsloth-shell IMAGE="spark-unsloth":
         -v ~/.netrc:/root/.netrc:ro \
         -v ~/.cache/uv:/root/.cache/uv \
         -v ~/.cache/huggingface:/root/.cache/huggingface \
+        -v ~/.cache/wandb:/root/.cache/wandb \
         -w /workspace \
         -e ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-} \
         -e OPENAI_API_KEY=${OPENAI_API_KEY:-} \
@@ -368,6 +369,7 @@ unsloth-train IMAGE="spark-unsloth":
         -v ~/.netrc:/root/.netrc:ro \
         -v ~/.cache/uv:/root/.cache/uv \
         -v ~/.cache/huggingface:/root/.cache/huggingface \
+        -v ~/.cache/wandb:/root/.cache/wandb \
         -w /workspace \
         -e WANDB_PROJECT=summarizer \
         -e WANDB_API_KEY=${WANDB_API_KEY:-} \

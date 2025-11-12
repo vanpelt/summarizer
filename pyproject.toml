@@ -31,6 +31,8 @@ dependencies = [
     # Data & Validation
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
+    # Analysis
+    "marimo",
     # CLI
     "click>=8.1.0",
     "rich>=13.0.0",
@@ -40,6 +42,8 @@ dependencies = [
     "openai>=1.0.0", # For OpenAI-based synthetic data generation
     "datasets>=3.2.0",
     "jsonlines>=4.0.0",
+    "pandas>=2.0.0",
+    "altair>=5.0.0",
     # Monitoring
     "wandb>=0.18.0",
     "weave>=0.51.0",
