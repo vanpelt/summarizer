@@ -150,10 +150,12 @@ train-trl:
 # Generate DPO preference dataset (Phase 2 distillation)
 # Configure via environment variables:
 #   TEACHER=gpt-4o-mini BATCH=4 just generate-dpo-dataset
+#   STUDENT_BACKEND=ollama STUDENT=gemma3-270m-student just generate-dpo-dataset
 #   RESUME=1 just generate-dpo-dataset  # Resume from last checkpoint
 generate-dpo-dataset:
     #!/usr/bin/env bash
     TEACHER="{{ env('TEACHER', 'gemma3:27b') }}"
+    STUDENT_BACKEND="{{ env('STUDENT_BACKEND', 'unsloth') }}"
     STUDENT="{{ env('STUDENT', 'models/gemma3-270m-student-unsloth-v1') }}"
     INPUT="{{ env('INPUT', 'data/gpt5nano/train.jsonl') }}"
     OUTPUT="{{ env('OUTPUT', 'data/gpt5nano/train_dpo.jsonl') }}"
@@ -162,6 +164,7 @@ generate-dpo-dataset:
 
     echo "Generating DPO preference dataset..."
     echo "Teacher: $TEACHER"
+    echo "Student backend: $STUDENT_BACKEND"
     echo "Student: $STUDENT"
     echo "Input: $INPUT"
     echo "Output: $OUTPUT"
@@ -176,6 +179,7 @@ generate-dpo-dataset:
     uv run --no-project python scripts/distillation/generate_dpo_dataset.py \
         --teacher-backend auto \
         --teacher-model "$TEACHER" \
+        --student-backend "$STUDENT_BACKEND" \
         --student-model "$STUDENT" \
         --input "$INPUT" \
         --output "$OUTPUT" \
@@ -188,10 +192,12 @@ generate-dpo-dataset:
 # Generate extended DPO dataset with synthetic prompts (Phase 2 distillation)
 # Configure via environment variables:
 #   NUM_SYNTHETIC=1000 BATCH=8 just generate-dpo-extended
+#   STUDENT_BACKEND=ollama STUDENT=gemma3-270m-student just generate-dpo-extended
 #   RESUME=1 just generate-dpo-extended  # Resume from checkpoint
 generate-dpo-extended:
     #!/usr/bin/env bash
     TEACHER="{{ env('TEACHER', 'gemma3:27b') }}"
+    STUDENT_BACKEND="{{ env('STUDENT_BACKEND', 'unsloth') }}"
     STUDENT="{{ env('STUDENT', 'models/gemma3-270m-student-unsloth-v1') }}"
     NUM_SYNTHETIC="{{ env('NUM_SYNTHETIC', '500') }}"
     EXISTING_DATA="{{ env('EXISTING_DATA', 'data/gpt5nano/train.jsonl') }}"
@@ -202,6 +208,7 @@ generate-dpo-extended:
 
     echo "Generating extended DPO preference dataset with synthetic prompts..."
     echo "Teacher: $TEACHER"
+    echo "Student backend: $STUDENT_BACKEND"
     echo "Student: $STUDENT"
     echo "Existing data: $EXISTING_DATA"
     echo "Synthetic prompts: $NUM_SYNTHETIC"
@@ -220,6 +227,7 @@ generate-dpo-extended:
         --num-synthetic "$NUM_SYNTHETIC" \
         --teacher-backend auto \
         --teacher-model "$TEACHER" \
+        --student-backend "$STUDENT_BACKEND" \
         --student-model "$STUDENT" \
         --output "$OUTPUT" \
         --temperature "$TEMPERATURE" \
@@ -231,9 +239,11 @@ generate-dpo-extended:
 # Generate validation DPO preference dataset
 # Configure via environment variables:
 #   TEACHER=gpt-4o-mini just generate-dpo-val
+#   STUDENT_BACKEND=ollama STUDENT=gemma3-270m-student just generate-dpo-val
 generate-dpo-val:
     #!/usr/bin/env bash
     TEACHER="{{ env('TEACHER', 'gemma3:27b') }}"
+    STUDENT_BACKEND="{{ env('STUDENT_BACKEND', 'unsloth') }}"
     STUDENT="{{ env('STUDENT', 'models/gemma3-270m-student-unsloth-v1') }}"
     INPUT="{{ env('INPUT', 'data/gpt5nano/val.jsonl') }}"
     OUTPUT="{{ env('OUTPUT', 'data/gpt5nano/val_dpo.jsonl') }}"
@@ -241,6 +251,7 @@ generate-dpo-val:
 
     echo "Generating validation DPO preference dataset..."
     echo "Teacher: $TEACHER"
+    echo "Student backend: $STUDENT_BACKEND"
     echo "Student: $STUDENT"
     echo "Input: $INPUT"
     echo "Output: $OUTPUT"
@@ -249,6 +260,7 @@ generate-dpo-val:
     uv run --no-project python scripts/distillation/generate_dpo_dataset.py \
         --teacher-backend auto \
         --teacher-model "$TEACHER" \
+        --student-backend "$STUDENT_BACKEND" \
         --student-model "$STUDENT" \
         --input "$INPUT" \
         --output "$OUTPUT" \

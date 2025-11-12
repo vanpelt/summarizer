@@ -119,32 +119,82 @@ def generate_synthetic_prompts(num_prompts: int, existing_prompts: List[str] = N
         prompt = f"""Generate {current_batch_size} diverse, realistic code change requests related to {category}.
 
 Requirements:
-- Each should be 5-15 words
+- Vary length from short (10-50 words) to very long (100-1000+ words)
 - Focus on {category}
-- Use natural, conversational language (like GitHub issue titles)
-- Vary complexity from simple to detailed
+- Use natural, conversational language (like GitHub issues or Slack messages)
+- 30% should be SHORT and concise (just the request)
+- 40% should be MEDIUM with context or explanation
+- 30% should be LONG with code snippets, error logs, stack traces, or detailed reproduction steps
 - Include different technical areas (frontend, backend, API, database, etc.)
+- For longer requests, include realistic code examples, error messages, logs, or stack traces
 
 Return ONLY a JSON array of strings, no other text:
 ["request 1", "request 2", ...]
 
-Examples of good requests:
-- "Add dark mode toggle to settings page"
-- "Fix memory leak in image processing worker"
-- "Refactor authentication middleware to use JWT"
-- "Update API documentation for v2 endpoints"
+Examples of different lengths:
+
+SHORT: "Add dark mode toggle to settings page"
+
+MEDIUM: "The user authentication flow is breaking on Safari. Users can log in but the session cookie isn't being set properly, causing them to be logged out on page refresh. Need to investigate cookie settings and SameSite attributes."
+
+LONG: "Getting a crash in the image upload handler. Here's the stack trace:\\n\\nTraceback (most recent call last):\\n  File \\"api/upload.py\\", line 45, in process_image\\n    img = Image.open(file_obj)\\n  File \\"/usr/lib/python3.9/PIL/Image.py\\", line 2904, in open\\n    raise UnidentifiedImageError(msg)\\nPIL.UnidentifiedImageError: cannot identify image file\\n\\nThis happens when users upload files with uppercase extensions like .JPG or .PNG. The MIME type validation passes but PIL fails to read them. We should normalize file extensions or improve the image detection."
 """
 
         try:
             response = client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
+                max_tokens=8000,  # Increased for longer prompts with code/logs
+                messages=[
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "["}
+                ]
             )
 
-            # Parse JSON response
+            # Parse JSON response (prefilled with "[", so prepend it back)
             text = response.content[0].text.strip()
-            batch_prompts = json.loads(text)
+            json_str = "[" + text
+
+            # Try parsing, with fallback to repair truncated JSON
+            try:
+                batch_prompts = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                # Try to repair truncated JSON
+                # Common issues: unterminated string, missing closing bracket
+                repaired = None
+
+                # Strategy 1: Add missing closing quote and bracket
+                if not json_str.rstrip().endswith(']'):
+                    # Check if we're in the middle of a string by counting unescaped quotes
+                    import re
+                    # Count quotes that are not preceded by backslash (or preceded by even number of backslashes)
+                    unescaped_quotes = len(re.findall(r'(?<!\\)(?:\\\\)*"', json_str))
+
+                    if unescaped_quotes % 2 == 1:  # Odd number = unterminated string
+                        repaired = json_str + '"]'
+                    else:
+                        repaired = json_str + ']'
+
+                    try:
+                        batch_prompts = json.loads(repaired)
+                        print(f"   ⚠️  Repaired truncated JSON (added closing)")
+                    except json.JSONDecodeError:
+                        pass
+
+                # Strategy 2: Find last complete string and truncate there
+                if repaired is None or 'batch_prompts' not in locals():
+                    try:
+                        # Find all complete strings up to the error
+                        import re
+                        complete_strings = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', json_str[:e.pos])
+                        if complete_strings:
+                            batch_prompts = complete_strings
+                            print(f"   ⚠️  Extracted {len(complete_strings)} complete strings from partial JSON")
+                    except Exception:
+                        pass
+
+                # If all repair attempts failed, raise the original error
+                if 'batch_prompts' not in locals() or not batch_prompts:
+                    raise
 
             # Filter out duplicates
             for p in batch_prompts:
@@ -191,9 +241,15 @@ def main():
         help="Teacher model name (for Ollama/OpenAI) or path (for vLLM)"
     )
     parser.add_argument(
+        "--student-backend",
+        choices=["unsloth", "ollama"],
+        default="unsloth",
+        help="Backend for student model (unsloth: load from disk, ollama: use Ollama API)"
+    )
+    parser.add_argument(
         "--student-model",
         default="models/gemma3-270m-student-unsloth-v1",
-        help="Student model path (Unsloth format)"
+        help="Student model path (Unsloth format) or Ollama model name"
     )
     parser.add_argument(
         "--output",
@@ -334,6 +390,7 @@ def main():
         "scripts/distillation/generate_dpo_dataset.py",
         "--teacher-backend", args.teacher_backend,
         "--teacher-model", args.teacher_model,
+        "--student-backend", args.student_backend,
         "--student-model", args.student_model,
         "--input", str(temp_input),
         "--output", str(args.output),

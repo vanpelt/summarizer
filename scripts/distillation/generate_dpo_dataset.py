@@ -22,8 +22,10 @@ import argparse
 import json
 import sys
 import os
+import time
 from pathlib import Path
 from typing import List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from tqdm import tqdm
 from unsloth import FastLanguageModel
@@ -109,12 +111,27 @@ def generate_with_ollama(
             "required": ["summary", "branch"]
         }
 
-    response = requests.post(
-        f"{base_url}/api/chat",
-        json=payload
-    )
-    response.raise_for_status()
-    return response.json()["message"]["content"]
+    try:
+        response = requests.post(
+            f"{base_url}/api/chat",
+            json=payload,
+            timeout=300  # 5 minute timeout
+        )
+        response.raise_for_status()
+        return response.json()["message"]["content"]
+    except requests.exceptions.HTTPError as e:
+        if response.status_code == 404:
+            raise ValueError(
+                f"Model '{model}' not found in Ollama. "
+                f"Available models: run 'ollama list' to see installed models. "
+                f"Error: {e}"
+            )
+        else:
+            raise ValueError(f"Ollama HTTP error {response.status_code}: {e}\nResponse: {response.text}")
+    except requests.exceptions.Timeout:
+        raise ValueError(f"Ollama request timed out after 300s for model '{model}'")
+    except Exception as e:
+        raise ValueError(f"Ollama request failed for model '{model}': {e}")
 
 
 def generate_with_vllm(
@@ -141,16 +158,19 @@ def generate_with_openai(
     model: str,
     messages: List[Dict[str, str]],
     temperature: float = 0.7,
-    api_key: str = None
+    api_key: str = None,
+    reasoning_effort: str = "low"
 ) -> str:
     """
     Generate using OpenAI API.
 
     Args:
-        model: Model name (e.g., "gpt-4o-mini", "gpt-5-mini")
+        model: Model name (e.g., "gpt-4o-mini", "gpt-5-mini", "gpt-5-nano")
         messages: Chat messages
         temperature: Generation temperature
         api_key: OpenAI API key (if None, reads from OPENAI_API_KEY env var)
+        reasoning_effort: Reasoning effort level ("low", "medium", "high", "minimal")
+                         Only applies to reasoning models (gpt-5, o1, o3)
 
     Returns:
         Generated text
@@ -162,12 +182,11 @@ def generate_with_openai(
 
     client = OpenAI(api_key=api_key)
 
-    # Add response format for structured output (matches prompt.txt schema)
-    # Note: No max_tokens or temperature - structured output uses default temperature=1
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        response_format={
+    # Build request parameters
+    params = {
+        "model": model,
+        "messages": messages,
+        "response_format": {
             "type": "json_schema",
             "json_schema": {
                 "name": "git_task_response",
@@ -189,9 +208,21 @@ def generate_with_openai(
                 }
             }
         }
-    )
+    }
 
-    return response.choices[0].message.content
+    # Add reasoning_effort for reasoning models (gpt-5, o1, o3)
+    if any(x in model.lower() for x in ["gpt-5", "o1", "o3"]):
+        params["reasoning_effort"] = reasoning_effort
+
+    try:
+        response = client.chat.completions.create(**params)
+        return response.choices[0].message.content
+    except Exception as e:
+        # Add helpful error context
+        error_msg = f"OpenAI API error for model '{model}'"
+        if "reasoning_effort" in params:
+            error_msg += f" (reasoning_effort={reasoning_effort})"
+        raise ValueError(f"{error_msg}: {e}")
 
 
 def generate_with_unsloth(
@@ -301,9 +332,15 @@ def main():
         help="Teacher model name (e.g., gemma3:27b, gpt-4o-mini, gpt-5-mini)"
     )
     parser.add_argument(
+        "--student-backend",
+        choices=["unsloth", "ollama"],
+        default="unsloth",
+        help="Backend for student model (unsloth: load from disk, ollama: use Ollama API)"
+    )
+    parser.add_argument(
         "--student-model",
         default="models/gemma3-270m-student-unsloth-v1",
-        help="Student model path (Unsloth format)"
+        help="Student model path (Unsloth format) or Ollama model name"
     )
     parser.add_argument(
         "--input",
@@ -356,6 +393,18 @@ def main():
         default="http://localhost:11434",
         help="Base URL for Ollama server (default works with --net=host Docker)"
     )
+    parser.add_argument(
+        "--teacher-parallelism",
+        type=int,
+        default=5,
+        help="Number of parallel teacher requests (OpenAI/API backends only, default: 5)"
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=["minimal", "low", "medium", "high"],
+        default="low",
+        help="Reasoning effort for OpenAI reasoning models (gpt-5, o1, o3). Default: low for speed."
+    )
 
     args = parser.parse_args()
 
@@ -397,16 +446,21 @@ def main():
         print(f"   Found {len(processed_indices)} already processed examples")
         print(f"   Remaining: {len(data) - len(processed_indices)} examples")
 
-    # Load student model
-    print(f"\nLoading student model from: {args.student_model}")
-    student_model, student_tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.student_model,
-        max_seq_length=2048,
-        dtype=None,
-        load_in_4bit=True,
-    )
-    FastLanguageModel.for_inference(student_model)
-    print("Student model loaded!")
+    # Load student model (only if using Unsloth backend)
+    student_model = None
+    student_tokenizer = None
+    if args.student_backend == "unsloth":
+        print(f"\nLoading student model from: {args.student_model}")
+        student_model, student_tokenizer = FastLanguageModel.from_pretrained(
+            model_name=args.student_model,
+            max_seq_length=2048,
+            dtype=None,
+            load_in_4bit=True,
+        )
+        FastLanguageModel.for_inference(student_model)
+        print("Student model loaded!")
+    else:
+        print(f"\nUsing Ollama for student model: {args.student_model}")
 
     # Prepare output file for incremental writes
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -516,36 +570,69 @@ def process_batch(
     prompt_messages_list = [item[1] for item in batch_data]
     original_messages_list = [item[2] for item in batch_data]
 
-    # Generate student outputs in batch (fast!)
-    try:
-        student_outputs = generate_with_unsloth_batch(
-            student_model,
-            student_tokenizer,
-            prompt_messages_list,
-            args.temperature
-        )
-    except Exception as e:
-        print(f"\n❌ Batch student generation failed: {e}")
-        # Fall back to sequential processing
+    # Generate student outputs
+    student_start = time.time()
+    if args.student_backend == "ollama":
+        # Use Ollama for student (sequential, but fast!)
         student_outputs = []
-        for prompt_msgs in prompt_messages_list:
+        for i, prompt_msgs in enumerate(prompt_messages_list):
             try:
-                output = generate_with_unsloth(
-                    student_model,
-                    student_tokenizer,
+                output = generate_with_ollama(
+                    args.student_model,
                     prompt_msgs,
-                    args.temperature
+                    args.temperature,
+                    enforce_json=False,  # Don't enforce JSON for student (may not be perfect)
+                    base_url=args.ollama_base_url
                 )
                 student_outputs.append(output)
-            except Exception as e2:
-                student_outputs.append(f"ERROR: {str(e2)}")
+            except Exception as e:
+                error_type = type(e).__name__
+                error_msg = f"Student generation failed ({error_type}): {str(e)}"
 
-    # Generate teacher outputs (sequential - APIs don't batch well)
-    teacher_outputs = []
-    for idx, prompt_msgs in zip(indices, prompt_messages_list):
+                # Only print error once per batch to avoid spam
+                if i == 0:
+                    print(f"\n❌ {error_msg}")
+                    if "404" in str(e) or "not found" in str(e).lower():
+                        print(f"   💡 Hint: Model '{args.student_model}' not found in Ollama")
+                        print(f"   Run: ollama list")
+
+                student_outputs.append(f"ERROR: {error_msg}")
+    else:
+        # Use Unsloth with batching
+        try:
+            student_outputs = generate_with_unsloth_batch(
+                student_model,
+                student_tokenizer,
+                prompt_messages_list,
+                args.temperature
+            )
+        except Exception as e:
+            print(f"\n❌ Batch student generation failed: {e}")
+            # Fall back to sequential processing
+            student_outputs = []
+            for prompt_msgs in prompt_messages_list:
+                try:
+                    output = generate_with_unsloth(
+                        student_model,
+                        student_tokenizer,
+                        prompt_msgs,
+                        args.temperature
+                    )
+                    student_outputs.append(output)
+                except Exception as e2:
+                    student_outputs.append(f"ERROR: {str(e2)}")
+    student_time = time.time() - student_start
+
+    # Generate teacher outputs (parallel for API backends)
+    teacher_start = time.time()
+    teacher_outputs = [None] * len(indices)  # Pre-allocate with correct order
+
+    def generate_teacher(idx_position):
+        """Generate teacher output for a single example."""
+        idx, prompt_msgs = indices[idx_position], prompt_messages_list[idx_position]
         try:
             if args.teacher_backend == "ollama":
-                teacher_output = generate_with_ollama(
+                return idx_position, generate_with_ollama(
                     args.teacher_model,
                     prompt_msgs,
                     args.temperature,
@@ -553,28 +640,56 @@ def process_batch(
                     base_url=args.ollama_base_url
                 )
             elif args.teacher_backend == "openai":
-                teacher_output = generate_with_openai(
+                return idx_position, generate_with_openai(
                     args.teacher_model,
                     prompt_msgs,
-                    args.temperature
+                    args.temperature,
+                    reasoning_effort=args.reasoning_effort
                 )
             else:  # vllm
-                teacher_output = generate_with_vllm(
+                return idx_position, generate_with_vllm(
                     args.teacher_model,
                     prompt_msgs,
                     args.temperature,
                     args.vllm_base_url
                 )
-            teacher_outputs.append(teacher_output)
         except Exception as e:
-            error_msg = f"Example {idx}: Teacher generation failed: {str(e)}"
+            error_type = type(e).__name__
+            error_msg = f"Example {idx}: Teacher generation failed ({error_type}): {str(e)}"
             print(f"\n❌ {error_msg}")
+
+            # Show more details for common errors
+            if "404" in str(e) or "not found" in str(e).lower():
+                print(f"   💡 Hint: Check that model '{args.teacher_model}' is available")
+                if args.teacher_backend == "ollama":
+                    print(f"   Run: ollama list")
+
             errors.append({
                 "index": idx,
                 "error": error_msg,
+                "error_type": error_type,
                 "messages": prompt_msgs
             })
-            teacher_outputs.append(None)
+            return idx_position, None
+
+    # Use ThreadPoolExecutor for parallel API calls
+    with ThreadPoolExecutor(max_workers=args.teacher_parallelism) as executor:
+        futures = {executor.submit(generate_teacher, i): i for i in range(len(indices))}
+        for future in as_completed(futures):
+            idx_position, output = future.result()
+            teacher_outputs[idx_position] = output
+
+    teacher_time = time.time() - teacher_start
+
+    # Print timing stats
+    batch_size = len(indices)
+    print(f"\n⏱️  Batch timing ({batch_size} examples):")
+    print(f"   Student ({args.student_backend}): {student_time:.2f}s ({student_time/batch_size:.2f}s/ex)")
+    parallelism_note = f" [{args.teacher_parallelism} parallel]" if args.teacher_backend in ["openai", "vllm"] else ""
+    print(f"   Teacher ({args.teacher_backend}{parallelism_note}): {teacher_time:.2f}s ({teacher_time/batch_size:.2f}s/ex)")
+    print(f"   Total: {student_time + teacher_time:.2f}s")
+    if args.teacher_backend == "openai" and hasattr(args, 'reasoning_effort'):
+        print(f"   (Using reasoning_effort={args.reasoning_effort})")
 
     # Write successful examples to file immediately
     for idx, prompt_msgs, orig_msgs, teacher_out, student_out in zip(
