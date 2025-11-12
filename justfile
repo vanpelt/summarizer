@@ -309,6 +309,7 @@ train-dpo:
         -v ~/.netrc:/root/.netrc:ro \
         -v ~/.cache/uv:/root/.cache/uv \
         -v ~/.cache/huggingface:/root/.cache/huggingface \
+        -v ~/.cache/wandb:/root/.cache/wandb \
         -w /workspace \
         -e WANDB_PROJECT=summarizer \
         -e WANDB_API_KEY=${WANDB_API_KEY:-} \
@@ -390,12 +391,22 @@ export-gguf MODEL="./models/gemma3-270m-student-unsloth-v1" NAME="gemma3-summary
         python scripts/export/export_to_gguf.py --model-path {{MODEL}} --output-name {{NAME}} --quantization {{QUANT}}
 
 # Import GGUF model into Ollama
-ollama-import NAME="gemma3-summary-v1":
+# Usage: just ollama-import <directory-name> [model-name]
+# If model-name is not provided, uses directory-name
+ollama-import DIR_NAME MODEL_NAME="":
     #!/usr/bin/env bash
-    echo "Importing {{NAME}} into Ollama..."
+    # If MODEL_NAME is empty, use DIR_NAME
+    if [ -z "{{MODEL_NAME}}" ]; then
+        MODEL_NAME="{{DIR_NAME}}"
+    else
+        MODEL_NAME="{{MODEL_NAME}}"
+    fi
+
+    echo "Importing from directory: {{DIR_NAME}}"
+    echo "Creating Ollama model: $MODEL_NAME"
 
     # Check if the model directory exists
-    MODEL_DIR="models/gguf/{{NAME}}"
+    MODEL_DIR="models/gguf/{{DIR_NAME}}"
     if [ ! -d "$MODEL_DIR" ]; then
         echo "Error: Model directory not found: $MODEL_DIR"
         echo ""
@@ -413,16 +424,15 @@ ollama-import NAME="gemma3-summary-v1":
     fi
 
     echo "Using model directory: $MODEL_DIR"
-    echo "Creating Ollama model: {{NAME}}"
 
     # Import from the model directory
     cd "$MODEL_DIR"
-    ollama create {{NAME}} -f Modelfile
+    ollama create "$MODEL_NAME" -f Modelfile
     cd - > /dev/null
 
     echo ""
-    echo "✅ Model imported as: {{NAME}}"
-    echo "Test with: ollama run {{NAME}} 'Fix the login bug'"
+    echo "✅ Model imported as: $MODEL_NAME"
+    echo "Test with: ollama run $MODEL_NAME 'Fix the login bug'"
 
 # Run tests
 test:

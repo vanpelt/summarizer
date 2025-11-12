@@ -1,373 +1,145 @@
-# Qwen3-8B Fine-tuning for JSON Generation
+# Gemma3-270M Distillation
 
-Fine-tune Qwen3:8b to generate JSON outputs with task titles and git branch names from arbitrary user prompts. Optimized for multi-model training and inference on high-memory GPUs (128GB).
+Knowledge distillation from larger models (Gemma3-27B, GPT-4o-mini) to Gemma3-270M for efficient JSON generation. Uses supervised fine-tuning (SFT) and Direct Preference Optimization (DPO) for task titles and git branch names.
 
 ## Features
 
-- **QLoRA Fine-tuning**: Memory-efficient training using 4-bit quantization and LoRA adapters
-- **Multi-Model Training**: Train 8-12 models concurrently on a single 128GB GPU
-- **Multi-Model Inference**: Serve multiple fine-tuned models simultaneously with vLLM
-- **Constrained Decoding**: Guarantee 100% JSON compliance using Pydantic schemas
-- **Synthetic Data Generation**: Generate training data using Claude API
-- **Full Stack**: CLI tools, REST API, and Python client for inference
+- **Two-Phase Distillation**: SFT + DPO training using Unsloth
+- **Synthetic Data**: Generate training data from larger teacher models
+- **Efficient**: 270M parameter student model runs on modest hardware
+- **GGUF Export**: Deploy to Ollama for CPU/GPU inference
+- **Docker-based**: Reproducible training environment
+
+## Quick Start
+
+See [CLAUDE.md](CLAUDE.md) for detailed documentation.
+
+### Phase 1: Supervised Fine-tuning (SFT)
+
+```bash
+# Train student model on teacher outputs
+just unsloth-train
+```
+
+### Phase 2: Direct Preference Optimization (DPO)
+
+```bash
+# Generate preference dataset (teacher vs student outputs)
+just generate-dpo-extended
+
+# Split dataset for training and evaluation
+DATASET=data/gpt5nano/train_dpo_extended_split.jsonl \
+VAL_DATASET=data/gpt5nano/val_dpo_extended.jsonl \
+just train-dpo
+```
+
+### Export and Deploy
+
+```bash
+# Export to GGUF format
+just export-gguf models/gemma3-270m-student-dpo-v7_merged gemma3-270m-student-dpo-v7
+
+# Import to Ollama
+just ollama-import gemma3-270m-student-dpo-v7
+
+# Test
+ollama run gemma3-270m-student-dpo-v7 'Fix the login bug'
+```
 
 ## Project Structure
 
 ```
 summary-finetune/
-├── configs/              # Axolotl training configurations
-│   ├── qlora-8b.yml     # Standard QLoRA config (~8-10GB memory)
-│   └── qlora-8b-small.yml  # Lightweight config (~6-8GB memory)
-├── data/                # Training data
-│   ├── processed/       # Formatted JSONL datasets
-│   └── synthetic/       # Generated synthetic data
-├── models/              # Trained LoRA adapters
+├── data/
+│   └── gpt5nano/          # Training datasets (SFT and DPO)
+├── models/                # Trained checkpoints
+│   └── gemma3-270m-*/     # Student model versions
 ├── scripts/
-│   ├── data/           # Data generation scripts
-│   └── training/       # Training orchestration
-├── src/
-│   ├── api/            # FastAPI application
-│   ├── cli/            # Command-line tools
-│   └── inference/      # vLLM server wrapper and client
-└── tests/              # Unit tests
+│   ├── distillation/      # DPO dataset generation and training
+│   ├── training/          # Unsloth SFT training
+│   └── export/            # GGUF export
+├── justfile               # Task runner commands
+├── CLAUDE.md              # Detailed documentation
+└── Dockerfile.unsloth     # Training environment
 ```
 
-## Installation
-
-### Prerequisites
-
-- Python 3.10+
-- CUDA-capable GPU (128GB recommended for multi-model training)
-- NVIDIA drivers and CUDA toolkit
-
-### Setup
-
-1. Clone the repository:
-```bash
-cd /home/vanpelt/Development/lab/summary-finetune
-```
-
-2. Create and activate virtual environment:
-```bash
-python -m venv .venv
-source .venv/bin/activate  # On Linux/Mac
-```
-
-3. Install dependencies:
-```bash
-pip install -e ".[dev]"
-```
-
-4. Set up environment variables:
-```bash
-cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
-```
-
-## Quick Start
-
-### 1. Generate Synthetic Training Data
+## Key Commands
 
 ```bash
-# Generate 1000 training examples using Claude API
-python scripts/data/generate_synthetic.py --num-examples 1000
+# Build Docker image
+just build-unsloth
 
-# Or use the installed command
-finetune-data --num-examples 1000
+# Train student model (Phase 1: SFT)
+just unsloth-train
+
+# Generate DPO dataset with synthetic prompts (Phase 2)
+just generate-dpo-extended
+
+# Train with DPO (Phase 2)
+just train-dpo
+
+# Export to GGUF
+just export-gguf <model-path> <output-name>
+
+# Import to Ollama
+just ollama-import <model-name>
+
+# Interactive shell
+just unsloth-shell
 ```
 
-This creates `data/processed/train.jsonl`, `val.jsonl`, and `test.jsonl`.
-
-### 2. Train a Single Model
+## Environment Variables
 
 ```bash
-# Train with default config (uses configs/qlora-8b.yml)
-python scripts/training/train_single.py
+# Required for synthetic data generation
+ANTHROPIC_API_KEY=<your-key>    # For Claude-based generation
+OPENAI_API_KEY=<your-key>       # For GPT-based generation
 
-# Or specify a custom config
-python scripts/training/train_single.py --config configs/qlora-8b-small.yml
+# Optional
+WANDB_API_KEY=<your-key>        # For training metrics
+HF_TOKEN=<your-key>             # For private HuggingFace models
+CUDA_VISIBLE_DEVICES=0          # GPU selection
 ```
 
-### 3. Train Multiple Models Concurrently
+## Model Versions
 
+| Model | Training | Description |
+|-------|----------|-------------|
+| `gemma3-270m-student-unsloth-v1` | SFT | Initial distillation from teacher |
+| `gemma3-270m-student-dpo-v*` | DPO | Refined with preference learning |
+
+## Training Configuration
+
+**DPO Training** (default):
+- Batch size: 4
+- Gradient accumulation: 4
+- Learning rate: 5e-5
+- Epochs: 3
+- Beta (KL penalty): 0.1
+- LoRA rank: 64
+
+Customize via environment variables:
 ```bash
-# Train 4 models with default preset
-python scripts/training/train_multi.py --preset default
-
-# Train 8 models for maximum concurrency
-python scripts/training/train_multi.py --preset max-concurrency
-
-# Custom configs
-python scripts/training/train_multi.py --configs configs/qlora-8b.yml configs/qlora-8b-small.yml
+BATCH_SIZE=8 LR=1e-4 EPOCHS=5 just train-dpo
 ```
 
-Monitor GPU usage:
-```bash
-watch -n 1 nvidia-smi
-```
+## Hardware Requirements
 
-### 4. Start Inference Server
-
-```bash
-# Auto-discover and load all trained models
-finetune-serve --discover
-
-# Load specific models
-finetune-serve --adapters model-v1 --adapters model-v2
-
-# Start vLLM + FastAPI wrapper
-finetune-serve --discover --api
-```
-
-### 5. Generate Using CLI
-
-```bash
-# Generate title and branch name
-finetune-generate "Add user authentication to the app"
-
-# Use specific model
-finetune-generate "Fix memory leak in pipeline" --model model-v2
-
-# Raw JSON output
-finetune-generate "Update API docs" --raw
-```
-
-### 6. Use REST API
-
-Start the API server:
-```bash
-finetune-serve --discover --api
-```
-
-Make requests:
-```bash
-# Using curl
-curl -X POST "http://localhost:8080/generate" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Add dark mode toggle", "model": "default"}'
-
-# Response:
-# {
-#   "title": "Add Dark Mode Toggle",
-#   "branch_name": "feat/dark-mode-toggle",
-#   "model": "default",
-#   "prompt": "Add dark mode toggle"
-# }
-```
-
-Using Python:
-```python
-import requests
-
-response = requests.post(
-    "http://localhost:8080/generate",
-    json={"prompt": "Fix login bug", "model": "default"}
-)
-result = response.json()
-print(f"Title: {result['title']}")
-print(f"Branch: {result['branch_name']}")
-```
-
-## Configuration
-
-### Training Configuration
-
-Edit `configs/qlora-8b.yml` to customize training:
-
-```yaml
-# Key parameters
-lora_r: 32                    # LoRA rank
-lora_alpha: 64                # LoRA alpha
-micro_batch_size: 2           # Batch size per step
-gradient_accumulation_steps: 8 # Gradient accumulation
-num_epochs: 3                 # Training epochs
-learning_rate: 0.0002         # Learning rate
-```
-
-### Memory Usage
-
-| Configuration | Memory/Job | Max Concurrent (128GB) |
-|--------------|------------|----------------------|
-| `qlora-8b.yml` | 8-10 GB | 11-12 jobs |
-| `qlora-8b-small.yml` | 6-8 GB | 14-16 jobs |
-
-### Inference Configuration
-
-vLLM server options:
-```bash
-finetune-serve \
-  --discover \
-  --port 8000 \
-  --gpu-memory 0.9 \
-  --base-model Qwen/Qwen3-8B
-```
-
-## Advanced Usage
-
-### Custom Training Script
-
-```python
-from pathlib import Path
-from scripts.training.train_single import train_model
-
-# Train with custom config
-train_model(
-    config_path=Path("configs/my-config.yml"),
-    output_dir=Path("models/my-model")
-)
-```
-
-### Python Inference Client
-
-```python
-from src.inference.client import InferenceClient
-
-# Synchronous client
-with InferenceClient(base_url="http://localhost:8000") as client:
-    result = client.generate(
-        prompt="Add user authentication",
-        model="model-v1",
-        temperature=0.7
-    )
-    print(f"Title: {result.title}")
-    print(f"Branch: {result.branch_name}")
-
-# Async client
-from src.inference.client import AsyncInferenceClient
-import asyncio
-
-async def generate():
-    async with AsyncInferenceClient() as client:
-        result = await client.generate("Fix memory leak")
-        return result
-
-result = asyncio.run(generate())
-```
-
-### Manage vLLM Server Programmatically
-
-```python
-from pathlib import Path
-from src.inference.vllm_server import VLLMServer
-
-# Create server
-server = VLLMServer(
-    base_model="Qwen/Qwen3-8B",
-    port=8000
-)
-
-# Add adapters
-server.add_lora_adapter("model1", Path("models/qwen3-8b-json-v1"))
-server.add_lora_adapter("model2", Path("models/qwen3-8b-json-v2"))
-
-# Start server
-server.start(background=True)
-server.wait_for_ready()
-
-# Use server...
-
-# Clean up
-server.stop()
-```
-
-## API Documentation
-
-Once the API server is running, visit:
-- Swagger UI: http://localhost:8080/docs
-- ReDoc: http://localhost:8080/redoc
-
-### Endpoints
-
-- `POST /generate` - Generate title and branch name
-- `GET /health` - Health check
-- `GET /models` - List available models
-- `GET /` - API information
-
-## Development
-
-### Run Tests
-
-```bash
-pytest tests/
-```
-
-### Code Formatting
-
-```bash
-# Format code
-black src/ scripts/ tests/
-
-# Lint code
-ruff check src/ scripts/ tests/
-```
-
-### Type Checking
-
-```bash
-mypy src/
-```
+- **Training**: NVIDIA GPU with 40GB+ VRAM (tested on DGX Spark GH200)
+- **Inference**: CPU or GPU (via Ollama)
+- **Export**: GPU for GGUF conversion
 
 ## Performance
 
-### Training Performance
+- **Model size**: 270M parameters
+- **Training time**: ~2-3 hours per phase on GH200
+- **Inference**: Fast on CPU with GGUF quantization
 
-On DGX Spark with 128GB GPU:
-- Single model training: 8-10 GB VRAM, ~2-3 hours for 3 epochs (1000 examples)
-- Concurrent training: 8-12 models simultaneously
-- Throughput: ~100-150 examples/sec per job
+## Documentation
 
-### Inference Performance
-
-With vLLM on 128GB GPU:
-- Base model + 8 LoRA adapters: ~18 GB VRAM
-- Remaining KV cache: ~100 GB
-- Throughput: 1000-2000 tokens/sec
-- Concurrent requests: 50-100+
-
-## Troubleshooting
-
-### Out of Memory During Training
-
-- Use `configs/qlora-8b-small.yml` for smaller memory footprint
-- Reduce `micro_batch_size` in config
-- Reduce `sequence_len` to 1024 or 512
-- Train fewer models concurrently
-
-### vLLM Server Won't Start
-
-- Check GPU availability: `nvidia-smi`
-- Verify model path exists
-- Reduce `--gpu-memory-utilization`
-- Check logs for detailed errors
-
-### Poor Generation Quality
-
-- Generate more training data (3000+ examples)
-- Increase training epochs
-- Adjust learning rate
-- Use larger LoRA rank (e.g., 64)
-- Enable constrained decoding
-
-## Project Roadmap
-
-- [ ] Add evaluation metrics and benchmarking
-- [ ] Support for other base models (Llama, Mistral)
-- [ ] Docker containerization
-- [ ] CI/CD pipeline
-- [ ] Web UI for generation
-- [ ] Fine-tuning on custom datasets
+- [CLAUDE.md](CLAUDE.md) - Complete documentation for development
+- [justfile](justfile) - All available commands
 
 ## License
 
 MIT
-
-## Contributing
-
-Contributions welcome! Please open an issue or submit a pull request.
-
-## Acknowledgments
-
-- [Axolotl](https://github.com/OpenAccess-AI-Collective/axolotl) - Fine-tuning framework
-- [vLLM](https://github.com/vllm-project/vllm) - Inference engine
-- [Qwen Team](https://github.com/QwenLM/Qwen) - Base model
-- [Anthropic](https://anthropic.com) - Claude API for data generation

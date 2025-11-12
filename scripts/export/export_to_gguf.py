@@ -28,9 +28,16 @@ def export_gguf(
     print(f"Exporting {model_path} to GGUF")
     print("=" * 60)
 
-    # Create output directory
-    output_dir = f"models/gguf/{output_name}"
-    os.makedirs(output_dir, exist_ok=True)
+    # Convert model_path to absolute path to avoid issues when changing directories
+    model_path = os.path.abspath(model_path)
+
+    # Create parent output directory (models/gguf/)
+    # Unsloth will create the model-specific subdirectory itself
+    output_parent = "models/gguf"
+    os.makedirs(output_parent, exist_ok=True)
+
+    # Full output directory (for display and Modelfile creation)
+    output_dir = f"{output_parent}/{output_name}"
     print(f"\nOutput directory: {output_dir}")
 
     # Load the trained model
@@ -42,25 +49,45 @@ def export_gguf(
         load_in_4bit=True,
     )
 
-    # Export to GGUF in the output directory
-    print(f"\nExporting with quantization: {quantization}")
-    print(f"Output name: {output_name}")
+    # Prepare model for inference (important for merged models)
+    model = FastLanguageModel.for_inference(model)
 
-    # Change to output directory for export
-    original_dir = os.getcwd()
-    os.chdir(output_dir)
+    # Export to GGUF
+    print(f"\nExporting with quantization: {quantization}")
+    print(f"Output directory: {output_dir}")
 
     try:
+        # save_pretrained_gguf takes a directory path where to save the GGUF files
         model.save_pretrained_gguf(
-            output_name,
+            output_dir,
             tokenizer,
             quantization_method=quantization,
         )
-        gguf_filename = f"{output_name}-{quantization}-unsloth.gguf"
-        print(f"\n✅ Successfully exported to: {output_dir}/{gguf_filename}")
+
+        # Unsloth creates the GGUF with the model's base name, not our output_name
+        # Find and rename the generated GGUF file
+        quant_upper = quantization.upper().replace("-", "_")
+        model_base_name = os.path.basename(model_path.rstrip("/"))
+        generated_gguf = f"{model_base_name}.{quant_upper}.gguf"
+        expected_gguf = f"{output_name}-{quantization}-unsloth.gguf"
+
+        # Move from current directory to output directory with correct name
+        if os.path.exists(generated_gguf):
+            os.rename(generated_gguf, os.path.join(output_dir, expected_gguf))
+            print(f"\n✅ Successfully exported to: {output_dir}/{expected_gguf}")
+        else:
+            print(f"\n⚠️  Warning: Expected GGUF file not found: {generated_gguf}")
+            print(f"   Looking for any .gguf files...")
+            import glob
+            gguf_files = glob.glob("*.gguf")
+            if gguf_files:
+                print(f"   Found: {gguf_files}")
+                # Move the first one found
+                os.rename(gguf_files[0], os.path.join(output_dir, expected_gguf))
+                print(f"\n✅ Moved {gguf_files[0]} to: {output_dir}/{expected_gguf}")
 
         # Create Modelfile
-        _create_modelfile(gguf_filename, output_dir)
+        _create_modelfile(expected_gguf, output_dir)
 
     except Exception as e:
         print(f"\n❌ Export failed with {quantization}: {e}")
@@ -68,18 +95,28 @@ def export_gguf(
 
         # Fallback to Q8_0 if unsupported
         model.save_pretrained_gguf(
-            output_name,
+            output_dir,
             tokenizer,
             quantization_method="Q8_0",
         )
-        gguf_filename = f"{output_name}-Q8_0-unsloth.gguf"
-        print(f"\n✅ Successfully exported to: {output_dir}/{gguf_filename}")
+
+        # Handle Q8_0 filename
+        model_base_name = os.path.basename(model_path.rstrip("/"))
+        generated_gguf = f"{model_base_name}.Q8_0.gguf"
+        expected_gguf = f"{output_name}-Q8_0-unsloth.gguf"
+
+        if os.path.exists(generated_gguf):
+            os.rename(generated_gguf, os.path.join(output_dir, expected_gguf))
+        else:
+            import glob
+            gguf_files = glob.glob("*.gguf")
+            if gguf_files:
+                os.rename(gguf_files[0], os.path.join(output_dir, expected_gguf))
+
+        print(f"\n✅ Successfully exported to: {output_dir}/{expected_gguf}")
 
         # Create Modelfile
-        _create_modelfile(gguf_filename, output_dir)
-
-    finally:
-        os.chdir(original_dir)
+        _create_modelfile(expected_gguf, output_dir)
 
     print("\n" + "=" * 60)
     print("Export complete!")

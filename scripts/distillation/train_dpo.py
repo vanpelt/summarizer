@@ -114,55 +114,6 @@ def format_dpo_dataset(data: List[Dict[str, Any]], tokenizer) -> Dataset:
     return Dataset.from_list(formatted)
 
 
-def format_eval_dataset(data: List[Dict[str, Any]], tokenizer) -> Dataset:
-    """
-    Format standard eval dataset for DPO validation.
-
-    For validation, we create synthetic preference pairs by using
-    the ground truth as "chosen" and will generate "rejected" on-the-fly.
-
-    Args:
-        data: List of examples with "messages" field
-        tokenizer: Tokenizer for formatting
-
-    Returns:
-        HuggingFace Dataset for evaluation
-    """
-    formatted = []
-
-    for example in data:
-        messages = example["messages"]
-
-        # Extract prompt and assistant response
-        prompt_messages = [
-            msg for msg in messages if msg["role"] in ["system", "user"]
-        ]
-        assistant_messages = [
-            msg for msg in messages if msg["role"] == "assistant"
-        ]
-
-        if not prompt_messages or not assistant_messages:
-            continue
-
-        # Format prompt
-        prompt_text = tokenizer.apply_chat_template(
-            prompt_messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-
-        # Use ground truth as "chosen"
-        # For "rejected", we'll use a simple placeholder since
-        # DPOTrainer will generate during eval
-        formatted.append({
-            "prompt": prompt_text,
-            "chosen": assistant_messages[0]["content"],
-            "rejected": assistant_messages[0]["content"],  # Placeholder
-        })
-
-    return Dataset.from_list(formatted)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Train DPO model with TRL")
     parser.add_argument(
@@ -179,8 +130,8 @@ def main():
     parser.add_argument(
         "--val-dataset",
         type=Path,
-        default=Path("data/gpt5nano/val.jsonl"),
-        help="Validation dataset"
+        default=Path("data/gpt5nano/val_dpo.jsonl"),
+        help="Validation dataset (DPO format with prompt/chosen/rejected)"
     )
     parser.add_argument(
         "--output-base",
@@ -294,6 +245,11 @@ def main():
     if not args.no_wandb:
         wandb.init(
             project="summarizer-distillation-dpo",
+            settings=wandb.Settings(
+                x_stats_open_metrics_endpoints={
+                    "sparky": "http://localhost:9400/metrics"
+                }
+            ),
             name=output_dir,
             config={
                 "base_model": args.base_model,
@@ -350,7 +306,7 @@ def main():
     train_dataset = format_dpo_dataset(train_data, tokenizer)
     print(f"   Formatted {len(train_dataset)} training examples")
 
-    # Load validation dataset if provided
+    # Load validation dataset if provided (DPO format)
     eval_dataset = None
     if args.val_dataset.exists():
         val_data = load_jsonl(args.val_dataset)
@@ -358,7 +314,8 @@ def main():
         if len(val_data) > args.max_eval_samples:
             print(f"   Limiting eval dataset from {len(val_data)} to {args.max_eval_samples} samples")
             val_data = val_data[:args.max_eval_samples]
-        eval_dataset = format_eval_dataset(val_data, tokenizer)
+        # Use same DPO formatting as train (val data already has prompt/chosen/rejected)
+        eval_dataset = format_dpo_dataset(val_data, tokenizer)
         print(f"   Formatted {len(eval_dataset)} validation examples")
 
     # DPO Training Configuration
