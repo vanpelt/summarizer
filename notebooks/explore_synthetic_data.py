@@ -136,7 +136,7 @@ def _(TEST_FILE, TRAIN_FILE, dataset_selector, json, pd):
 
     # Create DataFrame
     df = pd.DataFrame(parsed_data)
-    df
+    df[["request","summary","branch"]]
     return df, test_data, train_data
 
 
@@ -298,8 +298,8 @@ def _(Counter, filtered_df, re):
         return found
 
     all_languages = []
-    for req in filtered_df['request']:
-        all_languages.extend(detect_languages(req))
+    for _req in filtered_df['request']:
+        all_languages.extend(detect_languages(_req))
 
     lang_counts = Counter(all_languages)
     return (lang_counts,)
@@ -336,8 +336,8 @@ def _(Counter, filtered_df, re):
         return found
 
     all_app_types = []
-    for req in filtered_df['request']:
-        all_app_types.extend(detect_app_types(req))
+    for _req in filtered_df['request']:
+        all_app_types.extend(detect_app_types(_req))
 
     app_type_counts = Counter(all_app_types)
     return (app_type_counts,)

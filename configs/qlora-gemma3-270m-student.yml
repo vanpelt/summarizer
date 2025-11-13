@@ -67,18 +67,18 @@ gradient_checkpointing: true
 
 # Data configuration - using separate train/val files
 datasets:
-  - path: data/gpt5nano/train.jsonl
+  - path: data/synthetic/train.jsonl
     type: chat_template
     field_messages: messages
 
 # Validation dataset
 test_datasets:
-  - path: data/gpt5nano/val.jsonl
+  - path: data/synthetic/test.jsonl
     type: chat_template
     field_messages: messages
 
 # Output configuration
-output_dir: ./models/gemma3-270m-student-v1
+output_dir: ./models/gemma3-270m-enhanced-v10
 
 # Saves
 save_safetensors: true

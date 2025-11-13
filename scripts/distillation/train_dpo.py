@@ -23,6 +23,7 @@ from datasets import Dataset
 from transformers import TrainingArguments
 from trl import DPOTrainer, DPOConfig
 from unsloth import FastLanguageModel, is_bfloat16_supported
+from unsloth.chat_templates import get_chat_template
 import wandb
 
 # Set memory limits early
@@ -104,6 +105,8 @@ def format_dpo_dataset(data: List[Dict[str, Any]], tokenizer) -> Dataset:
             tokenize=False,
             add_generation_prompt=True
         )
+        # Remove BOS token prefix as per Unsloth docs
+        prompt_text = prompt_text.removeprefix('<bos>')
 
         formatted.append({
             "prompt": prompt_text,
@@ -217,13 +220,13 @@ def main():
         args.eval_batch_size = max(1, args.batch_size // 2)
 
     # Calculate memory limits
-    max_memory_bytes = int(args.max_memory_gb * 1024**3)  # Convert GB to bytes
-    # Reserve memory for each model (trainable + reference)
-    # Allocate 60% for trainable model, 30% for reference, 10% for overhead
     max_memory = {0: f"{int(args.max_memory_gb * 0.9)}GB"}  # 90% of limit for GPU 0
 
     # Set PyTorch CUDA memory fraction
-    torch.cuda.set_per_process_memory_fraction(args.max_memory_gb / torch.cuda.get_device_properties(0).total_memory * 1024**3)
+    total_memory = torch.cuda.get_device_properties(0).total_memory
+    memory_fraction = (args.max_memory_gb * 1024**3) / total_memory
+    torch.cuda.set_per_process_memory_fraction(memory_fraction)
+    print(f"   Set memory fraction to {memory_fraction:.2%} of total GPU memory")
 
     # Auto-increment version
     output_dir = get_next_version(args.output_base)
@@ -272,6 +275,13 @@ def main():
         max_memory=max_memory,
     )
 
+    # Set up chat template for Gemma-3
+    print("   Setting up Gemma-3 chat template...")
+    tokenizer = get_chat_template(
+        tokenizer,
+        chat_template="gemma-3",
+    )
+
     # Load reference model for DPO (frozen copy of base model)
     print("\n2. Loading reference model...")
     ref_model, _ = FastLanguageModel.from_pretrained(
@@ -305,6 +315,25 @@ def main():
 
     train_dataset = format_dpo_dataset(train_data, tokenizer)
     print(f"   Formatted {len(train_dataset)} training examples")
+
+    # Verify formatting with a sample
+    print("\n" + "=" * 70)
+    print("Sample DPO Training Example (first example):")
+    print("=" * 70)
+    sample = train_dataset[0]
+    print("PROMPT:")
+    print(sample["prompt"][:300])
+    if len(sample["prompt"]) > 300:
+        print(f"... (truncated, full length: {len(sample['prompt'])} chars)")
+    print("\nCHOSEN:")
+    print(sample["chosen"][:200])
+    if len(sample["chosen"]) > 200:
+        print(f"... (truncated, full length: {len(sample['chosen'])} chars)")
+    print("\nREJECTED:")
+    print(sample["rejected"][:200])
+    if len(sample["rejected"]) > 200:
+        print(f"... (truncated, full length: {len(sample['rejected'])} chars)")
+    print("=" * 70)
 
     # Load validation dataset if provided (DPO format)
     eval_dataset = None
@@ -408,7 +437,7 @@ def main():
     print(f"✅ Adapter saved to: {output_path}")
     print(f"✅ Merged model saved to: {merged_path}")
     print(f"\nNext steps:")
-    print(f"  1. Export to GGUF: just export-gguf {output_path} {output_dir}")
+    print(f"  1. Export to GGUF: just export-gguf {output_path}")
     print(f"  2. Import to Ollama: just ollama-import {output_dir}")
     print(f"  3. Test: ollama run {output_dir} 'Fix the login bug'")
 

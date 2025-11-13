@@ -381,16 +381,27 @@ unsloth-train IMAGE="spark-unsloth":
         bash -c "rm -rf /workspace/unsloth_compiled_cache /tmp/torchinductor_* && python scripts/training/train_unsloth_gemma3.py"
 
 # Export trained model to GGUF for Ollama
-export-gguf MODEL="./models/gemma3-270m-student-unsloth-v1" NAME="gemma3-summary-v1" QUANT="Q4_K_M" IMAGE="spark-unsloth":
+export-gguf MODEL="./models/gemma3-270m-student-unsloth-v1" NAME="" QUANT="Q4_K_M" IMAGE="spark-unsloth":
     #!/usr/bin/env bash
+    # If NAME is empty, use basename of MODEL directory
+    if [ -z "{{NAME}}" ]; then
+        NAME=$(basename "{{MODEL}}")
+    else
+        NAME="{{NAME}}"
+    fi
+
     echo "Exporting model to GGUF..."
+    echo "Model: {{MODEL}}"
+    echo "Output name: $NAME"
+    echo "Quantization: {{QUANT}}"
+
     docker run --rm \
         --gpus=all \
         -v $(pwd):/workspace \
         -v ~/.cache/huggingface:/root/.cache/huggingface \
         -w /workspace \
         {{IMAGE}} \
-        python scripts/export/export_to_gguf.py --model-path {{MODEL}} --output-name {{NAME}} --quantization {{QUANT}}
+        python scripts/export/export_to_gguf.py --model-path {{MODEL}} --output-name "$NAME" --quantization {{QUANT}}
 
 # Import GGUF model into Ollama
 # Usage: just ollama-import <directory-name> [model-name]
@@ -435,6 +446,10 @@ ollama-import DIR_NAME MODEL_NAME="":
     echo ""
     echo "✅ Model imported as: $MODEL_NAME"
     echo "Test with: ollama run $MODEL_NAME 'Fix the login bug'"
+
+# Smoke test
+smoke-test MODEL="gemma3-summary-v4":
+    ollama run {{MODEL}} --format json <prompt.txt
 
 # Run tests
 test:

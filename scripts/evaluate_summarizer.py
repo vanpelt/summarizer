@@ -12,6 +12,7 @@ import asyncio
 import argparse
 import requests
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -36,25 +37,41 @@ def load_dataset(dataset_path: str) -> List[Dict]:
     """
     Load dataset from JSONL file.
 
-    Each line has format:
-    {"messages": [
-        {"role": "system", "content": "..."},
-        {"role": "user", "content": "USER REQUEST"},
-        {"role": "assistant", "content": '{"summary": "...", "branch": "..."}'}
-    ]}
+    Supports both formats:
+    1. Unsloth format: {"conversations": [...]}
+    2. Standard format: {"messages": [...]}
+
+    Each conversation has:
+    - User message with full prompt (system + request)
+    - Assistant message with JSON: '{"summary": "...", "branch": "..."}'
     """
     dataset = []
     with open(dataset_path, "r") as f:
         for line in f:
             data = json.loads(line)
-            messages = data["messages"]
 
-            # Extract user request
+            # Support both "conversations" (unsloth) and "messages" (standard) formats
+            messages = data.get("conversations") or data.get("messages")
+            if not messages:
+                continue
+
+            # Extract user request and assistant response
             user_message = next((m for m in messages if m["role"] == "user"), None)
             assistant_message = next((m for m in messages if m["role"] == "assistant"), None)
 
             if user_message and assistant_message:
-                request = user_message["content"]
+                # The user message contains the full prompt including system instructions
+                # We need to extract just the "Request:" part
+                full_prompt = user_message["content"]
+
+                # Extract the request part after "Request:\n"
+                if "Request:\n" in full_prompt:
+                    request = full_prompt.split("Request:\n", 1)[1].strip()
+                else:
+                    # Fallback: use the entire content if no "Request:" marker
+                    request = full_prompt
+
+                # Parse the assistant's JSON response
                 expected_output = json.loads(assistant_message["content"])
 
                 dataset.append({
@@ -85,7 +102,7 @@ class SummarizerModelOllama(weave.Model):
         self._test_connection()
 
     def _test_connection(self):
-        """Test Ollama connection."""
+        """Test Ollama connection and verify model exists."""
         print("="*80)
         print("Testing Ollama connection")
         print(f"URL: {self.ollama_url}")
@@ -104,8 +121,15 @@ class SummarizerModelOllama(weave.Model):
             if self.model_name in model_names:
                 print(f"✅ Model '{self.model_name}' is available")
             else:
-                print(f"⚠️  Model '{self.model_name}' not found")
-                print(f"Available models: {', '.join(model_names)}")
+                print(f"❌ Model '{self.model_name}' not found in Ollama")
+                if model_names:
+                    print(f"\nAvailable models:")
+                    for model in model_names:
+                        print(f"  - {model}")
+                else:
+                    print(f"\nNo models found. Pull a model with: ollama pull {self.model_name}")
+                print("="*80 + "\n")
+                raise ValueError(f"Model '{self.model_name}' not found in Ollama. Please pull it first with: ollama pull {self.model_name}")
 
         except requests.exceptions.RequestException as e:
             print(f"❌ Failed to connect to Ollama: {e}")
@@ -432,9 +456,9 @@ def main():
     )
     parser.add_argument(
         "--dataset",
-        choices=["test", "val", "both"],
+        choices=["test", "val", "train", "all"],
         default="test",
-        help="Which dataset to use (default: test)"
+        help="Which dataset to use: test, val, train, or all (default: test)"
     )
     parser.add_argument(
         "--models",
@@ -446,6 +470,12 @@ def main():
         type=int,
         default=None,
         help="Limit number of examples to evaluate (default: all)"
+    )
+    parser.add_argument(
+        "--tag", "-t",
+        action="append",
+        dest="tags",
+        help="Add tags to the evaluation (can be used multiple times, e.g., -t production -t baseline)"
     )
     args = parser.parse_args()
 
@@ -460,20 +490,31 @@ def main():
     print(f"✅ Weave initialized: {weave_project}\n")
 
     # Load datasets
-    data_dir = Path(__file__).parent.parent / "data" / "gpt5nano"
+    data_dir = Path(__file__).parent.parent / "data" / "synthetic"
     datasets = []
 
-    if args.dataset in ["test", "both"]:
-        test_data = load_dataset(data_dir / "test.jsonl")
-        if args.limit:
-            test_data = test_data[:args.limit]
-        datasets.append(("test", test_data))
+    # Determine which datasets to load
+    dataset_choices = []
+    if args.dataset == "all":
+        dataset_choices = ["test", "val", "train"]
+    else:
+        dataset_choices = [args.dataset]
 
-    if args.dataset in ["val", "both"]:
-        val_data = load_dataset(data_dir / "val.jsonl")
-        if args.limit:
-            val_data = val_data[:args.limit]
-        datasets.append(("val", val_data))
+    # Load each requested dataset
+    for dataset_name in dataset_choices:
+        dataset_path = data_dir / f"{dataset_name}.jsonl"
+        if dataset_path.exists():
+            dataset_data = load_dataset(dataset_path)
+            if args.limit:
+                dataset_data = dataset_data[:args.limit]
+            datasets.append((dataset_name, dataset_data))
+            print(f"✅ Loaded {dataset_name} dataset: {len(dataset_data)} examples\n")
+        else:
+            print(f"⚠️  Warning: {dataset_name}.jsonl not found at {dataset_path}\n")
+
+    if not datasets:
+        print("❌ Error: No datasets loaded. Please check that dataset files exist.")
+        return []
 
     # Parse model names
     model_names = [m.strip() for m in args.models.split(",")]
@@ -497,6 +538,19 @@ def main():
             print(f"Dataset: {dataset_name} ({len(dataset)} examples)")
             print(f"{'-'*80}\n")
 
+            # Prepare evaluation metadata
+            eval_metadata = {
+                "model_name": model_name,
+                "dataset_name": dataset_name,
+                "dataset_size": len(dataset),
+                "ollama_url": args.ollama_url,
+                "timestamp": datetime.now().astimezone().isoformat(),
+            }
+
+            # Add user-provided tags if any
+            if args.tags:
+                eval_metadata["tags"] = args.tags
+
             # Create Weave Evaluation
             evaluation = weave.Evaluation(
                 name=f"{model_name.replace(':', '-').replace('/', '-')}-{dataset_name}",
@@ -507,6 +561,7 @@ def main():
                     branch_quality_score,
                     overall_quality_score,
                 ],
+                metadata=eval_metadata,
             )
 
             # Run evaluation
@@ -535,6 +590,8 @@ def main():
     print("All Evaluations Complete!")
     print(f"{'='*80}")
     print(f"Evaluated {len(model_names)} model(s) on {len(datasets)} dataset(s)")
+    if args.tags:
+        print(f"Tags: {', '.join(args.tags)}")
     print(f"\nView detailed results in Weave:")
     print(f"https://wandb.ai/{weave_project}")
     print(f"{'='*80}\n")

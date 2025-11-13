@@ -31,6 +31,7 @@ dependencies = [
     "anthropic",
     "wandb>=0.21.3",
     "xformers",
+    "weave>=0.52.16",
 ]
 
 
