@@ -278,7 +278,7 @@ def main():
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=4,
-        learning_rate=2e-4,
+        learning_rate=3e-4,
         lr_scheduler_type="cosine",
         warmup_steps=20,
         weight_decay=0.01,

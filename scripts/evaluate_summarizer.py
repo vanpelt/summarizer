@@ -466,6 +466,12 @@ def main():
         help="Comma-separated list of model names to evaluate (default: gemma3-summary-v1,gemma3:270m)"
     )
     parser.add_argument(
+        "--trials",
+        type=int,
+        default=1,
+        help="Number of trials to run for each example (default: 1)"
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -561,6 +567,7 @@ def main():
                     branch_quality_score,
                     overall_quality_score,
                 ],
+                trials=args.trials,
                 metadata=eval_metadata,
             )
 

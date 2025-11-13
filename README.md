@@ -21,7 +21,7 @@ See [CLAUDE.md](CLAUDE.md) for detailed documentation.
 just unsloth-train
 ```
 
-### Phase 2: Direct Preference Optimization (DPO)
+### Phase 2 (optional): Direct Preference Optimization (DPO)
 
 ```bash
 # Generate preference dataset (teacher vs student outputs)
@@ -33,17 +33,18 @@ VAL_DATASET=data/gpt5nano/val_dpo_extended.jsonl \
 just train-dpo
 ```
 
-### Export and Deploy
+### Export and Evaluate
 
 ```bash
-# Export to GGUF format
-just export-gguf models/gemma3-270m-student-dpo-v7_merged gemma3-270m-student-dpo-v7
+# Export GGUF and import to Ollama
+just export-gguf models/gemma3-270m-synthetic-v10
+just ollama-import gemma3-270m-synthetic-v10 gemma3-summary:v10
 
-# Import to Ollama
-just ollama-import gemma3-270m-student-dpo-v7
+# Smoke Test
+ollama smoke-test gemma3-summary:v10
 
-# Test
-ollama run gemma3-270m-student-dpo-v7 'Fix the login bug'
+# Weave Evaluation
+uv run scripts/evaluate_summarizer.py --models gemma3-summary:v10 -t lora_r:64 -t epochs:2 -t lr:2e4
 ```
 
 ## Project Structure
@@ -51,13 +52,14 @@ ollama run gemma3-270m-student-dpo-v7 'Fix the login bug'
 ```
 summary-finetune/
 ├── data/
-│   └── gpt5nano/          # Training datasets (SFT and DPO)
+│   └── synthetic/         # Training datasets (SFT and DPO)
 ├── models/                # Trained checkpoints
 │   └── gemma3-270m-*/     # Student model versions
 ├── scripts/
 │   ├── distillation/      # DPO dataset generation and training
 │   ├── training/          # Unsloth SFT training
 │   └── export/            # GGUF export
+|   evaluate_summarizer.py # Weave evaluation
 ├── justfile               # Task runner commands
 ├── CLAUDE.md              # Detailed documentation
 └── Dockerfile.unsloth     # Training environment

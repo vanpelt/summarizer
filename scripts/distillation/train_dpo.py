@@ -156,19 +156,19 @@ def main():
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=5e-5,
+        default=5e-6,
         help="Learning rate (DPO typically uses lower LR than SFT)"
     )
     parser.add_argument(
         "--epochs",
         type=int,
-        default=3,
+        default=1,
         help="Number of training epochs"
     )
     parser.add_argument(
         "--beta",
         type=float,
-        default=0.1,
+        default=0.2,
         help="DPO beta parameter (KL penalty weight)"
     )
     parser.add_argument(
@@ -197,8 +197,8 @@ def main():
     parser.add_argument(
         "--max-memory-gb",
         type=float,
-        default=74.0,
-        help="Maximum GPU memory to use in GB (default: 74GB)"
+        default=64.0,
+        help="Maximum GPU memory to use in GB (default: 64GB)"
     )
     parser.add_argument(
         "--eval-batch-size",
