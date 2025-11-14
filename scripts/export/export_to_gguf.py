@@ -6,7 +6,12 @@ Export trained Unsloth model to GGUF format for Ollama
 import os
 import sys
 import torch
+from pathlib import Path
 from unsloth import FastLanguageModel
+
+# Add parent directory to path to import from src
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.config import SYSTEM_PROMPT
 
 # Disable compilation for export
 torch._dynamo.config.disable = True
@@ -69,7 +74,9 @@ def export_gguf(
         quant_upper = quantization.upper().replace("-", "_")
         model_base_name = os.path.basename(model_path.rstrip("/"))
         generated_gguf = f"{model_base_name}.{quant_upper}.gguf"
-        expected_gguf = f"{output_name}-{quantization}-unsloth.gguf"
+
+        # Standard naming: gemma3-270m-summarizer-Q4_KM.gguf
+        expected_gguf = f"gemma3-270m-summarizer-{quant_upper}.gguf"
 
         # Move from current directory to output directory with correct name
         if os.path.exists(generated_gguf):
@@ -89,6 +96,9 @@ def export_gguf(
         # Create Modelfile
         _create_modelfile(expected_gguf, output_dir)
 
+        # Create HuggingFace config files (system prompt + params)
+        _create_hf_config_files(output_dir)
+
     except Exception as e:
         print(f"\n❌ Export failed with {quantization}: {e}")
         print("\nTrying fallback quantization: Q8_0")
@@ -103,7 +113,7 @@ def export_gguf(
         # Handle Q8_0 filename
         model_base_name = os.path.basename(model_path.rstrip("/"))
         generated_gguf = f"{model_base_name}.Q8_0.gguf"
-        expected_gguf = f"{output_name}-Q8_0-unsloth.gguf"
+        expected_gguf = f"gemma3-270m-summarizer-Q8_0.gguf"
 
         if os.path.exists(generated_gguf):
             os.rename(generated_gguf, os.path.join(output_dir, expected_gguf))
@@ -118,6 +128,9 @@ def export_gguf(
         # Create Modelfile
         _create_modelfile(expected_gguf, output_dir)
 
+        # Create HuggingFace config files (system prompt + params)
+        _create_hf_config_files(output_dir)
+
     print("\n" + "=" * 60)
     print("Export complete!")
     print(f"Location: {output_dir}")
@@ -125,8 +138,18 @@ def export_gguf(
 
 
 def _create_modelfile(gguf_filename: str, output_dir: str):
-    """Create Modelfile for Ollama import."""
+    """Create Modelfile for Ollama import with embedded default system prompt."""
+    # Escape the default system prompt for Modelfile SYSTEM directive
+    # This makes it available as the default system message
+    default_system = SYSTEM_PROMPT.strip()
+
     modelfile_content = f"""FROM {gguf_filename}
+
+# Default system prompt (used when user doesn't provide one)
+SYSTEM \"\"\"
+{default_system}
+\"\"\"
+
 TEMPLATE \"\"\"{{{{- $systemPromptAdded := false }}}}
 {{{{- range $i, $_ := .Messages }}}}
 {{{{- $last := eq (len (slice $.Messages $i)) 1 }}}}
@@ -144,6 +167,7 @@ TEMPLATE \"\"\"{{{{- $systemPromptAdded := false }}}}
 {{{{- end }}}}
 {{{{- end }}}}
 \"\"\"
+
 PARAMETER stop "<end_of_turn>"
 PARAMETER top_k 64
 PARAMETER top_p 0.95
@@ -152,6 +176,65 @@ PARAMETER top_p 0.95
     with open(modelfile_path, 'w') as f:
         f.write(modelfile_content)
     print(f"✅ Created Modelfile at: {modelfile_path}")
+
+
+def _create_hf_config_files(output_dir: str):
+    """
+    Create HuggingFace configuration files for Ollama integration.
+
+    Creates three files:
+    - 'system': Contains the default system prompt
+    - 'params': JSON file with sampling parameters
+    - 'template': Go template for chat formatting (matches gemma3:270m exactly)
+
+    These files allow HuggingFace to configure the model when used with Ollama
+    via 'ollama run hf.co/username/repo'
+    """
+    import json
+
+    # Create 'system' file with default system prompt
+    system_path = os.path.join(output_dir, "system")
+    with open(system_path, 'w') as f:
+        f.write(SYSTEM_PROMPT.strip())
+    print(f"✅ Created HuggingFace system file at: {system_path}")
+
+    # Create 'params' file with sampling parameters
+    # Matching official Ollama gemma3:270m parameters exactly
+    params = {
+        "top_k": 64,
+        "top_p": 0.95,
+        "stop": ["<end_of_turn>"]
+    }
+
+    params_path = os.path.join(output_dir, "params")
+    with open(params_path, 'w') as f:
+        json.dump(params, f, indent=2)
+    print(f"✅ Created HuggingFace params file at: {params_path}")
+
+    # Create 'template' file with proper Gemma3 chat template
+    # This matches the official gemma3:270m template exactly
+    # Key feature: Handles system prompt insertion with $systemPromptAdded flag
+    template_content = """{{- $systemPromptAdded := false }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "user" }}<start_of_turn>user
+{{- if (and (not $systemPromptAdded) $.System) }}
+{{- $systemPromptAdded = true }}
+{{ $.System }}
+{{ end }}
+{{ .Content }}<end_of_turn>
+{{ if $last }}<start_of_turn>model
+{{ end }}
+{{- else if eq .Role "assistant" }}<start_of_turn>model
+{{ .Content }}{{ if not $last }}<end_of_turn>
+{{ end }}
+{{- end }}
+{{- end }}"""
+
+    template_path = os.path.join(output_dir, "template")
+    with open(template_path, 'w') as f:
+        f.write(template_content)
+    print(f"✅ Created HuggingFace template file at: {template_path}")
 
 
 if __name__ == "__main__":

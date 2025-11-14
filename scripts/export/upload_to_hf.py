@@ -56,9 +56,9 @@ def main():
         help="W&B run URL or ID to link in model card (e.g., https://wandb.ai/entity/project/runs/run_id)",
     )
     parser.add_argument(
-        "--exclude-safetensors",
+        "--include-safetensors",
         action="store_true",
-        help="Exclude model.safetensors file from upload (saves bandwidth, only upload GGUF)",
+        help="Include model.safetensors file in upload (default: excluded to save bandwidth)",
     )
     parser.add_argument(
         "--description",
@@ -89,8 +89,8 @@ def main():
     print(f"Uploading model from: {model_dir}")
     print(f"Repository: {args.repo_id}")
     print(f"Private: {args.private}")
-    if args.exclude_safetensors:
-        print(f"Excluding: model.safetensors")
+    if not args.include_safetensors:
+        print(f"Excluding: model.safetensors (use --include-safetensors to upload)")
 
     # Auto-detect W&B run if not provided
     wandb_run_url = args.wandb_run
@@ -145,9 +145,9 @@ def main():
     except Exception as e:
         print(f"⚠ Warning: Could not upload model card: {e}")
 
-    # Prepare ignore patterns
+    # Prepare ignore patterns (exclude safetensors by default)
     ignore_patterns = []
-    if args.exclude_safetensors:
+    if not args.include_safetensors:
         ignore_patterns.append("*.safetensors")
 
     # Upload all files from the model directory
@@ -249,11 +249,19 @@ def generate_model_card(repo_id: str, model_dir: Path, wandb_run: str, descripti
     card_parts.append(description)
     card_parts.append("")
 
+    # Extract quantization from GGUF filename if present
+    quant_type = "Q4_K_M"  # default
+    if gguf_file:
+        import re
+        quant_match = re.search(r'(Q\d+_K_[MS]|Q\d+_\d+|F\d+|BF\d+)', gguf_file, re.IGNORECASE)
+        if quant_match:
+            quant_type = quant_match.group(1).upper()
+
     card_parts.append("## Model Details")
     card_parts.append("")
     card_parts.append("- **Base Model**: google/gemma-3-270m-it")
     card_parts.append("- **Format**: GGUF (quantized for efficient inference)")
-    card_parts.append("- **Quantization**: Q4_K_M")
+    card_parts.append(f"- **Quantization**: {quant_type}")
     card_parts.append("- **Use Case**: Generating concise task titles and git branch names")
     card_parts.append("")
 

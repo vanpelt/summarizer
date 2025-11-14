@@ -6,7 +6,7 @@ Run your fine-tuned Gemma3-270M model entirely in the browser using WebAssembly 
 
 ### 1. GitHub Pages
 
-This app is hosted on GitHub Pages!
+This app is hosted on [GitHub Pages](https://vanpelt.github.io/summarizer/)!
 
 ### 2. Start a Local HTTP Server (optional)
 

@@ -12,7 +12,13 @@ Knowledge distillation from larger models (Gemma3-27B, GPT-4o-mini) to Gemma3-27
 
 ## Quick Start
 
-See [CLAUDE.md](CLAUDE.md) for detailed documentation.
+[Try the model](https://vanpelt.github.io/summarizer/) in your browser!  You can also run the model locally with [Ollama](https://ollama.com/):
+
+```bash
+ollama run hf.co/vanpelt/summarizer:latest --format=json "Fix the bug with the button not re-activating"
+```
+
+## Development
 
 ### Phase 1: Supervised Fine-tuning (SFT)
 

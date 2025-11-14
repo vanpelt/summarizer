@@ -233,12 +233,12 @@ export-gguf MODEL="./models/gemma3-270m-student-unsloth-v1" NAME="" QUANT="Q4_K_
 # Usage: just upload-to-hf gemma3-270m-synthetic-v11 vanpelt/summarizer
 # Configure via environment variables:
 #   WANDB_RUN=https://wandb.ai/... just upload-to-hf ...
-#   EXCLUDE_SAFETENSORS=1 just upload-to-hf ...  (saves ~512MB bandwidth)
+#   INCLUDE_SAFETENSORS=1 just upload-to-hf ...  (includes safetensors, adds ~512MB)
 #   DESCRIPTION="My model description" just upload-to-hf ...
-upload-to-hf MODEL_DIR REPO_ID PRIVATE="--private":
+upload-to-hf MODEL_DIR REPO_ID="vanpelt/summarizer" PRIVATE="--private":
     #!/usr/bin/env bash
     WANDB_RUN="{{ env('WANDB_RUN', '') }}"
-    EXCLUDE_SAFETENSORS="{{ env('EXCLUDE_SAFETENSORS', '') }}"
+    INCLUDE_SAFETENSORS="{{ env('INCLUDE_SAFETENSORS', '') }}"
     DESCRIPTION="{{ env('DESCRIPTION', '') }}"
 
     echo "Uploading GGUF model to HuggingFace Hub..."
@@ -253,10 +253,12 @@ upload-to-hf MODEL_DIR REPO_ID PRIVATE="--private":
         echo "Visibility: Public"
     fi
 
-    EXCLUDE_FLAG=""
-    if [ -n "$EXCLUDE_SAFETENSORS" ]; then
-        EXCLUDE_FLAG="--exclude-safetensors"
-        echo "Excluding: model.safetensors (saves ~512MB)"
+    INCLUDE_FLAG=""
+    if [ -n "$INCLUDE_SAFETENSORS" ]; then
+        INCLUDE_FLAG="--include-safetensors"
+        echo "Including: model.safetensors (~512MB)"
+    else
+        echo "Excluding: model.safetensors (use INCLUDE_SAFETENSORS=1 to upload)"
     fi
 
     WANDB_FLAG=""
@@ -275,7 +277,7 @@ upload-to-hf MODEL_DIR REPO_ID PRIVATE="--private":
         --model-dir models/gguf/{{MODEL_DIR}} \
         --repo-id {{REPO_ID}} \
         $PRIVACY_FLAG \
-        $EXCLUDE_FLAG \
+        $INCLUDE_FLAG \
         $WANDB_FLAG \
         $DESC_FLAG
 
@@ -325,7 +327,7 @@ ollama-import DIR_NAME MODEL_NAME="":
 
 # Smoke test
 smoke-test MODEL="gemma3-summary-v4":
-    ollama run {{MODEL}} --format json <prompt.txt
+    ollama run {{MODEL}} --verbose --format json <prompt.txt
 
 # Run tests
 test:

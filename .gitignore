@@ -38,6 +38,9 @@ logs/
 wandb/
 *.log
 
+Modelfile
+unsloth_compiled_cache
+
 # Data (keep structure but not actual data files)
 data/raw/*
 data/processed/*
