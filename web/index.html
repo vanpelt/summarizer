@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Summarizer Browser Inference</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        // Import wllama from CDN with built-in CDN WASM support (using esm.sh)
+        import { Wllama }from 'https://esm.sh/@wllama/wllama@2.3.6/esm';
+        const WasmFromCDN = {
+            'single-thread/wllama.wasm': 'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.3.6/src/single-thread/wllama.wasm',
+            'multi-thread/wllama.wasm': 'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.3.6/src/multi-thread/wllama.wasm',
+        };
+
+        // Global state
+        let wllama = null;
+        let isModelLoaded = false;
+        let isGenerating = false;
+
+        // Model configuration - using wllama's native HuggingFace support
+        const HUGGINGFACE_MODEL_ID = 'vanpelt/summarizer';
+        const HUGGINGFACE_FILE_PATH = 'gemma3-270m-synthetic-v11-Q4_K_M-unsloth.gguf';
+
+        // Sample prompts from test data
+        const SAMPLE_PROMPTS = [
+            "We want a watchlist feature for issues. Users can subscribe to an issue and receive notifications on updates. Show a count of watchers on the issue page, and provide endpoints to subscribe/unsubscribe. Ensure notifications respect user preferences and do not duplicate.",
+            "Add unit tests for the middleware chain to ensure panic recovery works.",
+            "Add code signing step (Apple notarization + Developer ID) for macOS releases and document the required certificates in the repo README.",
+            "Agreed.  Last bug, for the launch codespace flow we currently wait for the codespace status to change and redirect to the workspace.  This doesn't work.  We need to trigger the same logic that's in the Access Codespace Flow.  Ideally once we've detected the codespace has been built we send the user back to the xcode/catnip/Views/CodespaceView.swift and have our codespace already selected so we can hit our cloudflare worker and get the SSE status updates for the codespace startup process.",
+            "The config migration guide from v0.16 to v0.17 is missing. Document the rename from 'endpoint' to 'server.url', default timeouts increasing from 10s to 30s, and how to run 'mycli config migrate'. Include a table mapping old keys to new keys, and show what happens with unknown keys.",
+            "Several endpoints reflect user-provided values in error messages. Let's standardize error responses to avoid reflecting raw input. Provide an opaque error code, a safe message, and an internal correlation ID for logs. Make sure we consistently escape JSON and avoid including SQL or file paths in user-facing messages.",
+            "Implement defense-in-depth on XML parsing. Use libxml2 with these settings: xmlReadOptions opts = XML_PARSE_NONET | XML_PARSE_NOENT | XML_PARSE_DTDATTR | XML_PARSE_DTDVALID; but make sure to remove XML_PARSE_NOENT to avoid entity expansion; set XML_PARSE_NONET to block external resources. Add explicit xmlDisableEntityLoader for older libxml2. Write a fuzzer corpora.",
+            "Write integration tests that validate SDK initialization with environment variable overrides.",
+            "There's a stack trace on malformed multipart form data leading to read beyond boundary. Add null checks and fail with 400. Add fuzz tests and size checks to cap total parts and per-part size.",
+            "This is fantastic, let's make this happen!  Be sure to start by creating a new branch in our repo for this feature."
+        ];
+
+        let currentPromptIndex = 0;
+
+        // Default system prompt
+        const DEFAULT_SYSTEM_PROMPT = `You are a careful assistant that outputs ONLY valid JSON matching the schema:
+{
+  "summary": "<2-4 words, Title Case, no punctuation>",
+  "branch": "<kebab-case, lowercase, [a-z0-9-] only, max 3 words, prefix with a category like bug/, feat/, etc.>"
+}
+Never include explanations or extra keys.
+
+Turn this request for code changes into:
+1) a 2–4 word summary (Title Case),
+2) a friendly git branch name (prefixed kebab-case).`;
+
+        // DOM elements
+        const modelStatus = document.getElementById('modelStatus');
+        const loadingProgress = document.getElementById('loadingProgress');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+
+        const promptInput = document.getElementById('promptInput');
+        const randomPromptBtn = document.getElementById('randomPromptBtn');
+        const generateBtn = document.getElementById('generateBtn');
+        const outputPlaceholder = document.getElementById('outputPlaceholder');
+        const outputArea = document.getElementById('outputArea');
+        const outputSummary = document.getElementById('outputSummary');
+        const outputBranch = document.getElementById('outputBranch');
+        const rawOutput = document.getElementById('rawOutput');
+        const errorOutput = document.getElementById('errorOutput');
+        const clearBtn = document.getElementById('clearBtn');
+
+        const temperatureSlider = document.getElementById('temperature');
+        const temperatureValue = document.getElementById('temperatureValue');
+        const topPSlider = document.getElementById('topP');
+        const topPValue = document.getElementById('topPValue');
+        const maxTokensInput = document.getElementById('maxTokens');
+        const advancedToggle = document.getElementById('advancedToggle');
+        const advancedSettings = document.getElementById('advancedSettings');
+        const systemPromptTextarea = document.getElementById('systemPrompt');
+        const statsDisplay = document.getElementById('statsDisplay');
+        const statsTime = document.getElementById('statsTime');
+        const statsTokens = document.getElementById('statsTokens');
+        const statsTps = document.getElementById('statsTps');
+
+        // Stats tracking
+        let startTime = 0;
+        let tokenCount = 0;
+        let statsInterval = null;
+
+        // Prefill tracking
+        let prefillTimer = null;
+        let isPrefilling = false;
+        let lastPrompt = '';
+        let nSystemTokens = 0; // Track number of tokens in cached system prompt
+
+        // Device and network detection
+        function isMobileDevice() {
+            return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+                || (window.innerWidth <= 768);
+        }
+
+        function isSlowNetwork() {
+            const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (!connection) return false;
+
+            // Check for cellular or slow connections
+            const slowTypes = ['slow-2g', '2g', '3g', 'cellular'];
+            return slowTypes.includes(connection.effectiveType) ||
+                   connection.type === 'cellular' ||
+                   connection.saveData === true; // User has data saver enabled
+        }
+
+        function shouldAutoLoad() {
+            // Don't auto-load on mobile or slow networks
+            if (isMobileDevice() || isSlowNetwork()) {
+                return false;
+            }
+            return true;
+        }
+
+        // Initialize
+        window.addEventListener('DOMContentLoaded', () => {
+            // Initialize system prompt textarea with default
+            systemPromptTextarea.value = DEFAULT_SYSTEM_PROMPT;
+
+            // Event listeners
+            generateBtn.addEventListener('click', generateText);
+            clearBtn.addEventListener('click', clearOutput);
+            randomPromptBtn.addEventListener('click', loadRandomPrompt);
+
+            temperatureSlider.addEventListener('input', (e) => {
+                temperatureValue.textContent = parseFloat(e.target.value).toFixed(2);
+            });
+
+            topPSlider.addEventListener('input', (e) => {
+                topPValue.textContent = parseFloat(e.target.value).toFixed(2);
+            });
+
+            // System prompt change handler - clear cache and re-prefill
+            systemPromptTextarea.addEventListener('change', async () => {
+                if (wllama && isModelLoaded && !isGenerating) {
+                    try {
+                        updateStatus('Re-warming cache with new system prompt...', 'text-blue-600');
+                        wllama.kvClear();
+                        nSystemTokens = 0;
+                        await prefillSystemPrompt();
+                        updateStatus('Model ready!', 'text-green-600');
+                    } catch (error) {
+                        console.error('Failed to re-warm cache:', error);
+                        updateStatus('Model loaded', 'text-green-600');
+                    }
+                }
+            });
+
+            // Advanced settings toggle with smooth animation
+            advancedToggle.addEventListener('click', () => {
+                const isOpen = advancedSettings.style.gridTemplateRows === '1fr';
+
+                if (isOpen) {
+                    // Close
+                    advancedSettings.style.gridTemplateRows = '0fr';
+                } else {
+                    // Open
+                    advancedSettings.style.gridTemplateRows = '1fr';
+                }
+
+                const icon = advancedToggle.querySelector('svg');
+                icon.classList.toggle('rotate-180');
+            });
+
+            // Allow Enter key to generate (with Shift+Enter for newlines)
+            promptInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (isModelLoaded && !isGenerating) {
+                        generateText();
+                    }
+                }
+            });
+
+            // Debounced prefill on input change
+            promptInput.addEventListener('input', () => {
+                if (!isModelLoaded || isGenerating) return;
+
+                const currentPrompt = promptInput.value.trim();
+
+                // Clear existing timer
+                if (prefillTimer) {
+                    clearTimeout(prefillTimer);
+                }
+
+                // Don't prefill if prompt is empty or hasn't changed
+                if (!currentPrompt || currentPrompt === lastPrompt) {
+                    return;
+                }
+
+                // Set new timer for 1 second
+                prefillTimer = setTimeout(() => {
+                    prefillPrompt(currentPrompt);
+                }, 1000);
+            });
+
+            // Conditionally auto-load model or show download button
+            if (shouldAutoLoad()) {
+                updateStatus('Auto-loading model...', 'text-blue-600');
+                loadModel();
+            } else {
+                // Show download button for mobile/slow networks
+                const downloadBtn = document.getElementById('downloadBtn');
+                const downloadWarning = document.getElementById('downloadWarning');
+                downloadBtn.classList.remove('hidden');
+                downloadWarning.classList.remove('hidden');
+                downloadBtn.addEventListener('click', loadModel);
+                updateStatus('Click "Download Model" to start (242MB)', 'text-orange-600');
+            }
+        });
+
+        async function prefillSystemPrompt() {
+            // Prefill system instruction + "Request: " prefix (common to all requests)
+            try {
+                updateStatus('Warming KV cache...', 'text-blue-500');
+
+                const messages = [
+                    {
+                        role: 'system',
+                        content: systemPromptTextarea.value
+                    },
+                    {
+                        role: 'user',
+                        content: 'Request:\n\n'
+                    }
+                ];
+
+                // Prefill to cache the system instructions + request prefix (template applied automatically)
+                await wllama.createChatCompletion(messages, {
+                    nPredict: 1,
+                    sampling: {
+                        temp: 0.7,
+                        top_p: 0.95,
+                        top_k: 64,
+                    },
+                    useCache: true,
+                });
+
+                // Track how many tokens are cached (system + template + "Request:\n\n")
+                const cachedTokens = await wllama.getCachedTokens();
+                nSystemTokens = cachedTokens.length;
+                console.log(`System prompt + request prefix cached (${nSystemTokens} tokens)`);
+
+            } catch (error) {
+                console.error('System prefill error:', error);
+                // Don't fail model loading if prefill fails
+            }
+        }
+
+        async function prefillPrompt(prompt) {
+            // Don't prefill if already prefilling or generating
+            if (isPrefilling || isGenerating) {
+                return;
+            }
+
+            try {
+                isPrefilling = true;
+                updateStatus('Prefilling prompt...', 'text-blue-500');
+
+                // Get parameters
+                const temperature = parseFloat(temperatureSlider.value);
+                const topP = parseFloat(topPSlider.value);
+
+                const messages = [
+                    {
+                        role: 'system',
+                        content: systemPromptTextarea.value
+                    },
+                    {
+                        role: 'user',
+                        content: `Request:\n\n${prompt}`
+                    }
+                ];
+
+                // Prefill by generating just 1 token to warm up KV cache
+                await wllama.createChatCompletion(messages, {
+                    nPredict: 1,
+                    sampling: {
+                        temp: temperature,
+                        top_p: topP,
+                        top_k: 64,
+                    },
+                    useCache: true, // Enable KV cache for prefill
+                });
+
+                lastPrompt = prompt;
+                updateStatus('Ready (prefilled)', 'text-green-600');
+
+            } catch (error) {
+                console.error('Prefill error:', error);
+                // Don't show error to user, just silently fail
+                updateStatus('Model loaded', 'text-green-600');
+            } finally {
+                isPrefilling = false;
+            }
+        }
+
+        async function loadModel() {
+            if (isModelLoaded) {
+                updateStatus('Model already loaded', 'text-green-600');
+                return;
+            }
+
+            try {
+                // Hide download button and warning if they were shown
+                const downloadBtn = document.getElementById('downloadBtn');
+                const downloadWarning = document.getElementById('downloadWarning');
+                if (downloadBtn) {
+                    downloadBtn.classList.add('hidden');
+                }
+                if (downloadWarning) {
+                    downloadWarning.classList.add('hidden');
+                }
+
+                loadingProgress.classList.remove('hidden');
+                updateStatus('Initializing model...', 'text-blue-600');
+
+                // Create wllama instance using built-in CDN helper
+                wllama = new Wllama(WasmFromCDN, {
+                    allowOffline: true  // Enable caching for faster subsequent loads
+                });
+
+                updateStatus('Loading model from HuggingFace...', 'text-blue-600');
+
+                // Load the model from HuggingFace using native wllama support
+                await wllama.loadModelFromHF(HUGGINGFACE_MODEL_ID, HUGGINGFACE_FILE_PATH, {
+                    n_ctx: 2048,  // Context size
+                    n_threads: navigator.hardwareConcurrency || 4,  // Use all CPU cores
+                    useCache: true,  // Enable browser caching for faster subsequent loads
+                    progressCallback: ({ loaded, total }) => {
+                        const percent = Math.round((loaded / total) * 100);
+                        updateProgress(percent, `Loading model: ${percent}%`);
+                    }
+                });
+
+                isModelLoaded = true;
+                loadingProgress.classList.add('hidden');
+
+                // Enable prompt input immediately - user can start typing while cache warms
+                promptInput.disabled = false;
+                promptInput.placeholder = 'Enter your prompt here...';
+                promptInput.focus();
+
+                // Prefill system prompt to warm KV cache in background
+                updateStatus('Model loaded, warming cache...', 'text-blue-600');
+                await prefillSystemPrompt();
+
+                updateStatus('Model ready!', 'text-green-600');
+                generateBtn.disabled = false;
+
+            } catch (error) {
+                console.error('Error loading model:', error);
+                updateStatus(`Error: ${error.message}`, 'text-red-600');
+                loadingProgress.classList.add('hidden');
+
+                // Show download button and warning again if applicable
+                if (!shouldAutoLoad()) {
+                    const downloadBtn = document.getElementById('downloadBtn');
+                    const downloadWarning = document.getElementById('downloadWarning');
+                    if (downloadBtn) {
+                        downloadBtn.classList.remove('hidden');
+                    }
+                    if (downloadWarning) {
+                        downloadWarning.classList.remove('hidden');
+                    }
+                }
+
+                alert(`Failed to load model: ${error.message}\n\nTips:\n- Ensure stable internet connection for downloading from HuggingFace\n- Browser must support OPFS and WebAssembly (Chrome/Edge 113+, Firefox 111+)\n- Model: ${HUGGINGFACE_MODEL_ID}/${HUGGINGFACE_FILE_PATH}\n- If using remote machine, access via SSH port forwarding to localhost\n- Check browser console for detailed errors`);
+            }
+        }
+
+        async function generateText() {
+            if (!isModelLoaded) {
+                alert('Please load the model first');
+                return;
+            }
+
+            const prompt = promptInput.value.trim();
+            if (!prompt) {
+                alert('Please enter a prompt');
+                return;
+            }
+
+            if (isGenerating) {
+                return;
+            }
+
+            // Wait for prefill to complete if it's running
+            if (isPrefilling) {
+                updateStatus('Waiting for prefill to complete...', 'text-blue-600');
+                // Poll until prefill is done (with timeout)
+                let waitCount = 0;
+                while (isPrefilling && waitCount < 100) { // Max 10 seconds wait
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    waitCount++;
+                }
+            }
+
+            // Track if we found valid output (needs to be accessible in catch block)
+            let foundValidOutput = false;
+
+            try {
+                // Cancel any pending prefill timer
+                if (prefillTimer) {
+                    clearTimeout(prefillTimer);
+                    prefillTimer = null;
+                }
+
+                isGenerating = true;
+                generateBtn.disabled = true;
+                generateBtn.textContent = 'Generating...';
+                clearBtn.disabled = true;
+
+                // Clear previous output and reset stats
+                outputPlaceholder.classList.add('hidden');
+                outputArea.classList.add('hidden');
+                rawOutput.classList.add('hidden');
+                errorOutput.classList.add('hidden');
+                outputSummary.textContent = '';
+                outputBranch.textContent = '';
+                rawOutput.textContent = '';
+                errorOutput.textContent = '';
+                tokenCount = 0;
+                startTime = performance.now();
+                statsDisplay.classList.remove('hidden');
+
+                // Start stats update interval (10 times per second for smooth updates)
+                statsInterval = setInterval(updateStats, 100);
+
+                // Get parameters
+                const temperature = parseFloat(temperatureSlider.value);
+                const topP = parseFloat(topPSlider.value);
+                const maxTokens = parseInt(maxTokensInput.value);
+
+                // Build messages array with assistant message prefix to encourage JSON output
+                const messages = [
+                    {
+                        role: 'system',
+                        content: systemPromptTextarea.value
+                    },
+                    {
+                        role: 'user',
+                        content: `Request:\n\n${prompt}`
+                    },
+                    {
+                        role: 'assistant',
+                        content: '{"summary": "'  // Start JSON to guide the model
+                    }
+                ];
+
+                // Keep system prompt in cache, remove everything after it (user prompt + previous output)
+                // This way we only recompute the user's specific prompt, not the whole system prompt
+                if (nSystemTokens > 0) {
+                    updateStatus('Preparing KV cache...', 'text-blue-600');
+                    await wllama.kvRemove(nSystemTokens, -1);
+                    console.log(`Kept ${nSystemTokens} system tokens, removed rest`);
+                }
+
+                updateStatus('Generating...', 'text-blue-600');
+
+                // Abort controller for early stopping
+                const abortController = new AbortController();
+
+                // Track accumulated text
+                let accumulatedText = '';
+
+                // Helper to parse and render JSON output
+                function tryParseAndRender(text) {
+                    // wllama returns the full completion, which already includes our assistant prefix
+                    // So text should already start with '{"summary": "'
+                    // Just show it as-is
+                    rawOutput.textContent = text;
+                    rawOutput.classList.remove('hidden');
+
+                    try {
+                        // Try to parse as JSON directly (it already has the prefix)
+                        const parsed = JSON.parse(text);
+
+                        // Check if we have both required fields
+                        if (parsed.summary && parsed.branch) {
+                            // Render pretty output
+                            outputSummary.textContent = parsed.summary;
+                            outputBranch.textContent = parsed.branch;
+                            outputArea.classList.remove('hidden');
+
+                            // Hide raw output once we have valid JSON
+                            rawOutput.classList.add('hidden');
+
+                            // Store formatted JSON in raw output for debugging
+                            rawOutput.textContent = JSON.stringify(parsed, null, 2);
+
+                            return true;
+                        }
+                    } catch (e) {
+                        // Not valid JSON yet, keep accumulating
+                        // Raw output is already visible showing progress
+                    }
+
+                    return false;
+                }
+
+                // Generate with streaming using onNewToken callback
+                await wllama.createChatCompletion(messages, {
+                    nPredict: maxTokens,
+                    sampling: {
+                        temp: temperature,
+                        top_p: topP,
+                        top_k: 64,
+                    },
+                    useCache: true,
+                    stopTokens: ['<end_of_turn>', '<eos>'],
+                    abortSignal: abortController.signal,
+                    onNewToken: (token, piece, currentText) => {
+                        // Increment token count
+                        tokenCount++;
+
+                        // Accumulate text (currentText already has our assistant prefix stripped by wllama)
+                        accumulatedText = currentText;
+
+                        // Check if we have valid output and should stop early
+                        if (!foundValidOutput && tryParseAndRender(currentText)) {
+                            foundValidOutput = true;
+                            console.log('Found valid JSON output, stopping generation early');
+                            abortController.abort();
+                            return;
+                        }
+                    }
+                });
+
+                // Stop stats interval and do final update
+                if (statsInterval) {
+                    clearInterval(statsInterval);
+                    statsInterval = null;
+                }
+                updateStats(); // Final update
+
+                // Final attempt to parse if we didn't get valid JSON during streaming
+                if (!foundValidOutput && accumulatedText) {
+                    tryParseAndRender(accumulatedText);
+                }
+
+                // Save this prompt as the last generated one
+                lastPrompt = prompt;
+
+                updateStatus('Generation complete', 'text-green-600');
+
+            } catch (error) {
+                // Ignore abort errors (expected when we stop early)
+                if (error.name === 'AbortError' || foundValidOutput) {
+                    console.log('Generation stopped early (valid output found)');
+                    updateStatus('Generation complete', 'text-green-600');
+                } else {
+                    console.error('Error generating text:', error);
+                    updateStatus(`Error: ${error.message}`, 'text-red-600');
+                    errorOutput.textContent = `Error: ${error.message}`;
+                    errorOutput.classList.remove('hidden');
+
+                    // Show raw output for debugging if we have accumulated text
+                    if (accumulatedText) {
+                        rawOutput.textContent = 'Partial output:\n' + accumulatedText;
+                        rawOutput.classList.remove('hidden');
+                    }
+                }
+            } finally {
+                // Stop stats interval
+                if (statsInterval) {
+                    clearInterval(statsInterval);
+                    statsInterval = null;
+                }
+                isGenerating = false;
+                generateBtn.disabled = false;
+                generateBtn.textContent = 'Generate';
+                clearBtn.disabled = false;
+            }
+        }
+
+        function updateStats() {
+            const elapsedMs = performance.now() - startTime;
+            const elapsedSec = elapsedMs / 1000;
+            const tokensPerSec = elapsedSec > 0 ? tokenCount / elapsedSec : 0;
+
+            // Update time (with 0.1s precision)
+            statsTime.textContent = `⏱️ ${elapsedSec.toFixed(1)}s`;
+
+            // Update token count
+            statsTokens.textContent = `🔢 ${tokenCount} token${tokenCount !== 1 ? 's' : ''}`;
+
+            // Update tokens per second (avoid showing very high numbers at start)
+            if (tokenCount > 0 && elapsedSec > 0.1) {
+                statsTps.textContent = `⚡ ${tokensPerSec.toFixed(1)} t/s`;
+            } else {
+                statsTps.textContent = `⚡ -- t/s`;
+            }
+        }
+
+        async function clearOutput() {
+            // Clear output and stats only (keep user's prompt)
+            outputPlaceholder.classList.remove('hidden');
+            outputArea.classList.add('hidden');
+            rawOutput.classList.add('hidden');
+            errorOutput.classList.add('hidden');
+            outputSummary.textContent = '';
+            outputBranch.textContent = '';
+            rawOutput.textContent = '';
+            errorOutput.textContent = '';
+            statsDisplay.classList.add('hidden');
+            tokenCount = 0;
+            lastPrompt = ''; // Reset prefill cache
+            if (statsInterval) {
+                clearInterval(statsInterval);
+                statsInterval = null;
+            }
+            if (prefillTimer) {
+                clearTimeout(prefillTimer);
+                prefillTimer = null;
+            }
+
+            // Clear KV cache and re-warm with system prompt only
+            if (wllama && isModelLoaded) {
+                try {
+                    wllama.kvClear();
+                    console.log('KV cache cleared, re-warming system prompt');
+                    updateStatus('Re-warming cache...', 'text-blue-600');
+                    await prefillSystemPrompt();
+                    updateStatus('Model ready!', 'text-green-600');
+                } catch (error) {
+                    console.warn('Failed to clear/re-warm KV cache:', error);
+                    updateStatus('Model loaded', 'text-green-600');
+                }
+            } else {
+                updateStatus(isModelLoaded ? 'Model loaded' : 'Model not loaded',
+                            isModelLoaded ? 'text-green-600' : 'text-red-600');
+            }
+        }
+
+        function updateStatus(message, colorClass) {
+            modelStatus.textContent = message;
+            modelStatus.className = `text-sm font-medium ${colorClass}`;
+        }
+
+        function updateProgress(percent, message) {
+            progressBar.style.width = `${percent}%`;
+            progressText.textContent = message;
+        }
+
+        function loadRandomPrompt() {
+            // Pick a random prompt
+            currentPromptIndex = Math.floor(Math.random() * SAMPLE_PROMPTS.length);
+            promptInput.value = SAMPLE_PROMPTS[currentPromptIndex];
+            promptInput.focus();
+
+            // Trigger prefill if model is ready
+            if (isModelLoaded && !isGenerating) {
+                // Clear any existing prefill timer
+                if (prefillTimer) {
+                    clearTimeout(prefillTimer);
+                }
+                // Prefill after a short delay
+                prefillTimer = setTimeout(() => {
+                    prefillPrompt(SAMPLE_PROMPTS[currentPromptIndex]);
+                }, 500);
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <!-- Header -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">
+                Summarizer Browser Inference
+            </h1>
+            <p class="text-gray-600">
+                Run's a fine-tuned Gemma3-270M model in your browser.  The model converts prompts inteded for coding agents into a 2-4 word summary and a git branch name.  You can find the <a href="https://github.com/vanpelt/summarizer" class="text-blue-600 underline hover:text-blue-700">source code on GitHub</a>, the <a href="https://wandb.ai/vanpelt/summarizer/runs/0t4lcgpb" class="text-blue-600 underline hover:text-blue-700">training run on Weights & Biases</a>, and the <a href="https://huggingface.co/vanpelt/summarizer" class="text-blue-600 underline hover:text-blue-700">model on HuggingFace</a>.
+            </p>
+        </div>
+
+        <!-- Main Section -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <!-- Header with Model Info and Status -->
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <h2 class="text-xl font-semibold text-gray-800">Summarizer</h2>
+                    <p class="text-xs text-gray-500">Q4_K_M quantized, 242MB</p>
+                </div>
+                <div id="modelStatus" class="text-sm font-medium text-blue-600">
+                    Loading...
+                </div>
+            </div>
+
+            <!-- Download Button (shown on mobile/slow networks) -->
+            <button
+                id="downloadBtn"
+                class="hidden w-full px-6 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition mb-4"
+            >
+                Download Model (242MB)
+            </button>
+
+            <!-- Download Warning (only shown when download button visible) -->
+            <div id="downloadWarning" class="hidden p-3 mb-4 bg-orange-50 border border-orange-200 rounded-lg">
+                <p class="text-sm text-orange-800">
+                    ⚠️ <strong>242MB download:</strong> This will download the model to your device. Ensure you're on WiFi if data usage is a concern.
+                </p>
+            </div>
+
+            <!-- Progress Bar -->
+            <div id="loadingProgress" class="mb-4 hidden">
+                <div class="w-full bg-gray-200 rounded-full h-2.5">
+                    <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <p id="progressText" class="text-sm text-gray-600 mt-2">Initializing...</p>
+            </div>
+
+            <!-- Prompt Input -->
+            <div class="mb-4">
+                <div class="flex items-center justify-between mb-2">
+                    <label class="block text-sm font-medium text-gray-700">
+                        Ask an agent to fix or create code
+                    </label>
+                    <button
+                        id="randomPromptBtn"
+                        class="text-sm text-blue-600 hover:text-blue-700 font-medium"
+                    >
+                        🎲 Try a random example
+                    </button>
+                </div>
+                <textarea
+                    id="promptInput"
+                    rows="4"
+                    disabled
+                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    placeholder="Enter your prompt here... (model loading...)"
+                ></textarea>
+                <p class="text-xs text-gray-500 mt-1">Press Enter to generate, Shift+Enter for newline</p>
+            </div>
+
+            <!-- Buttons -->
+            <div class="flex gap-3 mb-4">
+                <button
+                    id="generateBtn"
+                    disabled
+                    class="px-6 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                    Generate
+                </button>
+                <button
+                    id="clearBtn"
+                    class="px-6 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                    Clear KVCache
+                </button>
+            </div>
+
+            <!-- Output Area -->
+            <div class="mb-4">
+                <div class="flex items-center justify-between mb-2">
+                    <label class="text-sm font-medium text-gray-700">
+                        Output
+                    </label>
+                    <div id="statsDisplay" class="text-xs text-gray-500 font-mono hidden">
+                        <span id="statsTime" class="mr-3">⏱️ 0.0s</span>
+                        <span id="statsTokens" class="mr-3">🔢 0 tokens</span>
+                        <span id="statsTps">⚡ 0.0 t/s</span>
+                    </div>
+                </div>
+                <!-- Output container with fixed min-height -->
+                <div class="w-full min-h-[200px] border border-gray-300 rounded-lg relative">
+                    <!-- Placeholder (shown when no output) -->
+                    <div id="outputPlaceholder" class="absolute inset-0 flex items-center justify-center bg-gray-50 rounded-lg">
+                        <span class="text-6xl font-black italic text-gray-300">Magic</span>
+                    </div>
+                    <!-- Pretty JSON Output -->
+                    <div id="outputArea" class="absolute inset-0 bg-white p-6 rounded-lg hidden overflow-y-auto">
+                        <div class="space-y-4">
+                            <div>
+                                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Summary</div>
+                                <div id="outputSummary" class="text-2xl font-bold text-gray-900"></div>
+                            </div>
+                            <div>
+                                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Branch Name</div>
+                                <div id="outputBranch" class="text-lg font-mono text-blue-600 bg-blue-50 px-3 py-2 rounded inline-block"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Raw output for streaming/debugging -->
+                    <div
+                        id="rawOutput"
+                        class="absolute inset-0 px-4 py-3 bg-gray-50 rounded-lg font-mono text-sm whitespace-pre-wrap overflow-y-auto hidden"
+                    ></div>
+                    <!-- Error message area -->
+                    <div id="errorOutput" class="absolute inset-0 px-4 py-3 bg-red-50 rounded-lg text-red-700 overflow-y-auto hidden"></div>
+                </div>
+            </div>
+
+            <!-- Advanced Settings Accordion -->
+            <div class="border-t pt-4">
+                <button
+                    id="advancedToggle"
+                    class="flex items-center justify-between w-full text-left text-sm font-medium text-gray-700 hover:text-gray-900"
+                >
+                    <span>Advanced Settings</span>
+                    <svg class="w-5 h-5 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </svg>
+                </button>
+
+                <div id="advancedSettings" class="grid transition-all duration-300 ease-in-out" style="grid-template-rows: 0fr;">
+                    <div class="overflow-hidden">
+                        <div class="mt-4 space-y-4">
+                    <!-- System Prompt -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            System Prompt
+                        </label>
+                        <textarea
+                            id="systemPrompt"
+                            rows="6"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-xs"
+                        ></textarea>
+                        <p class="text-xs text-gray-500 mt-1">Changing this will clear the cache and re-prefill</p>
+                    </div>
+
+                    <!-- Parameters Grid -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">
+                                Temperature: <span id="temperatureValue" class="text-blue-600">0.70</span>
+                            </label>
+                            <input
+                                type="range"
+                                id="temperature"
+                                min="0"
+                                max="2"
+                                step="0.05"
+                                value="0.7"
+                                class="w-full"
+                            />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">
+                                Top P: <span id="topPValue" class="text-blue-600">0.95</span>
+                            </label>
+                            <input
+                                type="range"
+                                id="topP"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value="0.95"
+                                class="w-full"
+                            />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">
+                                Max Tokens
+                            </label>
+                            <input
+                                type="number"
+                                id="maxTokens"
+                                min="1"
+                                max="2048"
+                                value="256"
+                                class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            />
+                        </div>
+                    </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="mt-8 text-center text-sm text-gray-500">
+            <p>Powered by <a href="https://github.com/ngxson/wllama" class="text-blue-600 hover:underline">wllama</a> (llama.cpp + WebAssembly)</p>
+            <p class="mt-1">
+                Model: <a href="https://huggingface.co/vanpelt/summarizer" class="text-blue-600 hover:underline">vanpelt/summarizer</a> (Q4_K_M, 242MB)
+            </p>
+        </div>
+    </div>
+</body>
+</html>

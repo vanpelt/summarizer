@@ -24,13 +24,7 @@ env/
 *~
 
 # Models and checkpoints
-models/**/*.bin
-models/**/*.safetensors
-models/**/*.pt
-models/**/*.pth
-models/**/*.ckpt
-models/**/adapter_model.bin
-models/**/adapter_config.json
+models/*
 *.bin
 *.safetensors
 
@@ -47,10 +41,8 @@ wandb/
 # Data (keep structure but not actual data files)
 data/raw/*
 data/processed/*
-data/synthetic/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
-!data/synthetic/.gitkeep
 *.jsonl
 *.json
 !configs/*.json

@@ -120,6 +120,9 @@ torchaudio = [
 vllm = { path = "../vllm" }
 
 [dependency-groups]
+dev = [
+    "ipython>=8.37.0",
+]
 vllm = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",

@@ -142,6 +142,12 @@ def main():
         default=-1,
         help="Maximum number of training steps. If set, overrides --epochs. -1 means use epochs (default: -1)"
     )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=1e-4,
+        help="Learning rate (default: 1e-4)"
+    )
 
     args = parser.parse_args()
 
@@ -278,7 +284,7 @@ def main():
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=4,
-        learning_rate=3e-4,
+        learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
         warmup_steps=20,
         weight_decay=0.01,

@@ -356,9 +356,40 @@ unsloth-shell IMAGE="spark-unsloth":
         bash
 
 # Train with Unsloth in Docker (recommended for GB10)
+# Configure via environment variables to override script defaults:
+#   TRAIN_DATA=data/custom/train.jsonl just unsloth-train
+#   EVAL_DATA=data/custom/test.jsonl just unsloth-train
+#   OUTPUT_DIR=models/gemma3-270m-v2 RUN_NAME=gemma3-270m-v2 just unsloth-train
+#   EPOCHS=5 BATCH_SIZE=4 MAX_MEMORY_GB=100 just unsloth-train
+#   MAX_STEPS=100 just unsloth-train  # Override epochs with max_steps
+#   LR=5e-5 just unsloth-train  # Override learning rate
 unsloth-train IMAGE="spark-unsloth":
     #!/usr/bin/env bash
+    # Read environment variables with defaults from script
+    TRAIN_DATA="{{ env('TRAIN_DATA', '') }}"
+    EVAL_DATA="{{ env('EVAL_DATA', '') }}"
+    OUTPUT_DIR="{{ env('OUTPUT_DIR', '') }}"
+    RUN_NAME="{{ env('RUN_NAME', '') }}"
+    EPOCHS="{{ env('EPOCHS', '') }}"
+    BATCH_SIZE="{{ env('BATCH_SIZE', '') }}"
+    MAX_MEMORY_GB="{{ env('MAX_MEMORY_GB', '') }}"
+    MAX_STEPS="{{ env('MAX_STEPS', '') }}"
+    LR="{{ env('LR', '') }}"
+
     echo "Starting Unsloth training in Docker..."
+
+    # Build command arguments from environment variables
+    CMD="python scripts/training/train_unsloth_gemma3.py"
+    [ -n "$TRAIN_DATA" ] && CMD="$CMD --train-data $TRAIN_DATA" && echo "  Train data: $TRAIN_DATA"
+    [ -n "$EVAL_DATA" ] && CMD="$CMD --eval-data $EVAL_DATA" && echo "  Eval data: $EVAL_DATA"
+    [ -n "$OUTPUT_DIR" ] && CMD="$CMD --output-dir $OUTPUT_DIR" && echo "  Output dir: $OUTPUT_DIR"
+    [ -n "$RUN_NAME" ] && CMD="$CMD --run-name $RUN_NAME" && echo "  Run name: $RUN_NAME"
+    [ -n "$EPOCHS" ] && CMD="$CMD --epochs $EPOCHS" && echo "  Epochs: $EPOCHS"
+    [ -n "$BATCH_SIZE" ] && CMD="$CMD --batch-size $BATCH_SIZE" && echo "  Batch size: $BATCH_SIZE"
+    [ -n "$MAX_MEMORY_GB" ] && CMD="$CMD --max-memory-gb $MAX_MEMORY_GB" && echo "  Max memory: ${MAX_MEMORY_GB}GB"
+    [ -n "$MAX_STEPS" ] && CMD="$CMD --max-steps $MAX_STEPS" && echo "  Max steps: $MAX_STEPS"
+    [ -n "$LR" ] && CMD="$CMD --learning-rate $LR" && echo "  Learning rate: $LR"
+
     docker run --rm \
         --gpus=all \
         --net=host \
@@ -378,7 +409,7 @@ unsloth-train IMAGE="spark-unsloth":
         -e CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
         -e UV_NO_PROJECT=1 \
         {{IMAGE}} \
-        bash -c "rm -rf /workspace/unsloth_compiled_cache /tmp/torchinductor_* && python scripts/training/train_unsloth_gemma3.py"
+        bash -c "rm -rf /workspace/unsloth_compiled_cache /tmp/torchinductor_* && $CMD"
 
 # Export trained model to GGUF for Ollama
 export-gguf MODEL="./models/gemma3-270m-student-unsloth-v1" NAME="" QUANT="Q4_K_M" IMAGE="spark-unsloth":
@@ -402,6 +433,56 @@ export-gguf MODEL="./models/gemma3-270m-student-unsloth-v1" NAME="" QUANT="Q4_K_
         -w /workspace \
         {{IMAGE}} \
         python scripts/export/export_to_gguf.py --model-path {{MODEL}} --output-name "$NAME" --quantization {{QUANT}}
+
+# Upload GGUF model to HuggingFace Hub
+# Usage: just upload-to-hf gemma3-270m-synthetic-v11 vanpelt/summarizer
+# Configure via environment variables:
+#   WANDB_RUN=https://wandb.ai/... just upload-to-hf ...
+#   EXCLUDE_SAFETENSORS=1 just upload-to-hf ...  (saves ~512MB bandwidth)
+#   DESCRIPTION="My model description" just upload-to-hf ...
+upload-to-hf MODEL_DIR REPO_ID PRIVATE="--private":
+    #!/usr/bin/env bash
+    WANDB_RUN="{{ env('WANDB_RUN', '') }}"
+    EXCLUDE_SAFETENSORS="{{ env('EXCLUDE_SAFETENSORS', '') }}"
+    DESCRIPTION="{{ env('DESCRIPTION', '') }}"
+
+    echo "Uploading GGUF model to HuggingFace Hub..."
+    echo "Model: models/gguf/{{MODEL_DIR}}"
+    echo "Repo: {{REPO_ID}}"
+
+    PRIVACY_FLAG=""
+    if [ "{{PRIVATE}}" = "--private" ]; then
+        PRIVACY_FLAG="--private"
+        echo "Visibility: Private"
+    else
+        echo "Visibility: Public"
+    fi
+
+    EXCLUDE_FLAG=""
+    if [ -n "$EXCLUDE_SAFETENSORS" ]; then
+        EXCLUDE_FLAG="--exclude-safetensors"
+        echo "Excluding: model.safetensors (saves ~512MB)"
+    fi
+
+    WANDB_FLAG=""
+    if [ -n "$WANDB_RUN" ]; then
+        WANDB_FLAG="--wandb-run $WANDB_RUN"
+        echo "W&B Run: $WANDB_RUN"
+    fi
+
+    DESC_FLAG=""
+    if [ -n "$DESCRIPTION" ]; then
+        DESC_FLAG="--description \"$DESCRIPTION\""
+        echo "Description: $DESCRIPTION"
+    fi
+
+    uv run --no-project python scripts/export/upload_to_hf.py \
+        --model-dir models/gguf/{{MODEL_DIR}} \
+        --repo-id {{REPO_ID}} \
+        $PRIVACY_FLAG \
+        $EXCLUDE_FLAG \
+        $WANDB_FLAG \
+        $DESC_FLAG
 
 # Import GGUF model into Ollama
 # Usage: just ollama-import <directory-name> [model-name]

@@ -4585,6 +4585,10 @@ vllm = [
 ]
 
 [package.dev-dependencies]
+dev = [
+    { name = "ipython", version = "8.37.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' and platform_machine == 'aarch64'" },
+    { name = "ipython", version = "9.7.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and platform_machine == 'aarch64'" },
+]
 vllm = [
     { name = "black", marker = "platform_machine == 'aarch64'" },
     { name = "groq", marker = "platform_machine == 'aarch64'" },
@@ -4633,6 +4637,7 @@ requires-dist = [
 provides-extras = ["vllm", "axolotl"]
 
 [package.metadata.requires-dev]
+dev = [{ name = "ipython", specifier = ">=8.37.0" }]
 vllm = [
     { name = "black", specifier = ">=24.0.0" },
     { name = "groq", specifier = ">=0.33.0" },
