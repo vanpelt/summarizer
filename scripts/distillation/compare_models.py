@@ -10,7 +10,7 @@ Usage:
       --teacher gemma3:27b \
       --student-baseline models/gemma3-270m-student-v1 \
       --student-distilled models/gemma3-270m-distilled-v1 \
-      --test-data data/gpt5nano/test.jsonl
+      --test-data data/synthetic/test.jsonl
 """
 
 import argparse
@@ -225,7 +225,7 @@ def main():
     parser.add_argument(
         "--test-data",
         type=Path,
-        default=Path("data/gpt5nano/test.jsonl"),
+        default=Path("data/synthetic/test.jsonl"),
         help="Test dataset"
     )
     parser.add_argument(

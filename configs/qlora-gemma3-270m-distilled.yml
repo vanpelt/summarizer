@@ -66,13 +66,13 @@ gradient_checkpointing: true
 
 # Data configuration - using TEACHER-GENERATED outputs
 datasets:
-  - path: data/gpt5nano/train_teacher.jsonl  # Teacher outputs
+  - path: data/synthetic/train_teacher.jsonl  # Teacher outputs
     type: chat_template
     field_messages: messages
 
 # Validation dataset (original)
 test_datasets:
-  - path: data/gpt5nano/val.jsonl
+  - path: data/synthetic/test.jsonl
     type: chat_template
     field_messages: messages
 

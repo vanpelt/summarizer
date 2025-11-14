@@ -11,11 +11,11 @@ This script:
 Usage:
     # Generate 500 synthetic prompts and create DPO dataset
     uv run python scripts/distillation/extend_dpo_with_synthetic.py \
-        --existing-data data/gpt5nano/train.jsonl \
+        --existing-data data/synthetic/train.jsonl \
         --num-synthetic 500 \
         --teacher-model gemma3:27b \
         --student-model models/gemma3-270m-student-unsloth-v1 \
-        --output data/gpt5nano/train_dpo_extended.jsonl \
+        --output data/synthetic/train_dpo_extended.jsonl \
         --batch-size 4
 """
 
@@ -30,20 +30,11 @@ from typing import List, Dict, Any
 import anthropic
 from dotenv import load_dotenv
 
+# Add parent directory to path to import from src
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.config import SYSTEM_PROMPT
+
 load_dotenv()
-
-
-# Production system prompt
-SYSTEM_PROMPT = """You are a careful assistant that outputs ONLY valid JSON matching the schema:
-{
-  "summary": "<2-4 words, Title Case, no punctuation>",
-  "branch": "<kebab-case, lowercase, [a-z0-9-] only, max 3 words, prefix with a category like bug/, feat/, etc.>"
-}
-Never include explanations or extra keys.
-
-Turn this request for code changes into:
-1) a 2–4 word summary (Title Case),
-2) a friendly git branch name (prefixed kebab-case)."""
 
 
 # Task categories for diverse prompts
@@ -220,7 +211,7 @@ def main():
     parser.add_argument(
         "--existing-data",
         type=Path,
-        default=Path("data/gpt5nano/train.jsonl"),
+        default=Path("data/synthetic/train.jsonl"),
         help="Existing training data (optional, for reference)"
     )
     parser.add_argument(
@@ -254,7 +245,7 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/gpt5nano/train_dpo_extended.jsonl"),
+        default=Path("data/synthetic/train_dpo_extended.jsonl"),
         help="Output extended DPO preference dataset"
     )
     parser.add_argument(

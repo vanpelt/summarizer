@@ -87,21 +87,21 @@ ollama run gemma3:27b "Generate JSON: Add dark mode"
 uv run python scripts/distillation/generate_teacher_outputs.py \
   --backend ollama \
   --teacher-model gemma3:27b \
-  --input data/gpt5nano/train.jsonl \
-  --output data/gpt5nano/train_teacher.jsonl
+  --input data/synthetic/train.jsonl \
+  --output data/synthetic/train_teacher.jsonl
 
 # Or using vLLM
 uv run python scripts/distillation/generate_teacher_outputs.py \
   --backend vllm \
   --teacher-model google/gemma-3-27b-it \
-  --input data/gpt5nano/train.jsonl \
-  --output data/gpt5nano/train_teacher.jsonl
+  --input data/synthetic/train.jsonl \
+  --output data/synthetic/train_teacher.jsonl
 ```
 
 This will:
 - Load your 432 training examples
 - Generate teacher outputs for each
-- Save to `data/gpt5nano/train_teacher.jsonl`
+- Save to `data/synthetic/train_teacher.jsonl`
 - Take ~5-10 minutes with Ollama
 
 ### Step 3: Train Student Model (Baseline)
@@ -134,7 +134,7 @@ uv run python scripts/distillation/compare_models.py \
   --teacher gemma3:27b \
   --student-baseline models/gemma3-270m-student-v1 \
   --student-distilled models/gemma3-270m-distilled-v1 \
-  --test-data data/gpt5nano/test.jsonl
+  --test-data data/synthetic/test.jsonl
 ```
 
 ## Expected Results
@@ -175,15 +175,15 @@ ollama pull gemma3:27b
 just generate-dpo-dataset \
   gemma3:27b \
   models/gemma3-270m-student-unsloth-v1 \
-  data/gpt5nano/train.jsonl \
-  data/gpt5nano/train_dpo.jsonl
+  data/synthetic/train.jsonl \
+  data/synthetic/train_dpo.jsonl
 ```
 
 This will:
 - Use prompts from your existing training data (~432 examples)
 - Generate outputs from both teacher (via Ollama) and student
 - Create preference pairs in TRL format
-- Save to `data/gpt5nano/train_dpo.jsonl`
+- Save to `data/synthetic/train_dpo.jsonl`
 - Take ~10-15 minutes
 
 **Option B: Extend with synthetic prompts (recommended for better performance)**
@@ -194,15 +194,15 @@ just generate-dpo-extended \
   gemma3:27b \
   models/gemma3-270m-student-unsloth-v1 \
   500 \
-  data/gpt5nano/train_dpo_extended.jsonl
+  data/synthetic/train_dpo_extended.jsonl
 ```
 
 This will:
-1. Load existing prompts from `data/gpt5nano/train.jsonl` (~432 examples)
+1. Load existing prompts from `data/synthetic/train.jsonl` (~432 examples)
 2. Generate 500 new synthetic prompts using Claude API (requires `ANTHROPIC_API_KEY`)
 3. Generate teacher and student outputs for ALL prompts (existing + synthetic)
 4. Create extended preference dataset (~932 total examples)
-5. Save to `data/gpt5nano/train_dpo_extended.jsonl`
+5. Save to `data/synthetic/train_dpo_extended.jsonl`
 6. Take ~30-40 minutes for the full dataset
 
 **Why use synthetic data?**
@@ -240,12 +240,12 @@ See [JSON_ENFORCEMENT.md](./JSON_ENFORCEMENT.md) for details and customization.
 # Use standard dataset:
 just train-dpo \
   models/gemma3-270m-student-unsloth-v1 \
-  data/gpt5nano/train_dpo.jsonl
+  data/synthetic/train_dpo.jsonl
 
 # OR use extended dataset (recommended):
 just train-dpo \
   models/gemma3-270m-student-unsloth-v1 \
-  data/gpt5nano/train_dpo_extended.jsonl
+  data/synthetic/train_dpo_extended.jsonl
 ```
 
 This will:
@@ -344,20 +344,20 @@ For even better results, iterate DPO training:
 # Round 1: DPO from Phase 1 student
 just train-dpo \
   models/gemma3-270m-student-unsloth-v1 \
-  data/gpt5nano/train_dpo.jsonl
+  data/synthetic/train_dpo.jsonl
 # Creates: gemma3-270m-student-dpo-v1
 
 # Round 2: Generate new preferences with DPO-v1 as student
 just generate-dpo-dataset \
   gemma3:27b \
   models/gemma3-270m-student-dpo-v1 \
-  data/gpt5nano/train.jsonl \
-  data/gpt5nano/train_dpo_round2.jsonl
+  data/synthetic/train.jsonl \
+  data/synthetic/train_dpo_round2.jsonl
 
 # Round 2: Train DPO on new preferences
 just train-dpo \
   models/gemma3-270m-student-dpo-v1 \
-  data/gpt5nano/train_dpo_round2.jsonl
+  data/synthetic/train_dpo_round2.jsonl
 # Creates: gemma3-270m-student-dpo-v2
 ```
 
@@ -385,8 +385,8 @@ openpipe init
 openpipe distill \
   --teacher gemma3:27b \
   --student gemma3:270m \
-  --dataset data/gpt5nano/train.jsonl \
-  --eval data/gpt5nano/val.jsonl
+  --dataset data/synthetic/train.jsonl \
+  --eval data/synthetic/val.jsonl
 ```
 
 #### Option C: Custom PPO Implementation

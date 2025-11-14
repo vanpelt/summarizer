@@ -5,36 +5,30 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "summarizer"
 version = "0.1.0"
-description = "Distillation / fine-tuning on DGX Spark for JSON generation with title and git branch names"
+description = "Gemma3-270M distillation for JSON generation with title and git branch names"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = {text = "MIT"}
-keywords = ["llm", "fine-tuning", "qlora", "vllm", "axolotl"]
+keywords = ["llm", "fine-tuning", "distillation", "dpo", "unsloth", "ollama"]
 
 dependencies = [
-    # Core ML frameworks
-    # Note: For ARM64+CUDA (Grace Hopper), install PyTorch nightly first:
-    # uv pip install --index-url https://download.pytorch.org/whl/nightly/cu128 torch torchvision torchaudio
+    # Core ML frameworks (used by training scripts)
     "torch>=2.5.0",
-    "transformers>=4.50.0",
+    # Unsloth
+    "transformers>4.55.1,<=4.57.2",
+    "trl>=0.23.0",
+    "unsloth==2025.10.10",
+    "unsloth-zoo==2025.10.12",
+    "xformers",
     "accelerate>=1.2.0",
-    # Training
+    # Training (for Axolotl configs if needed)
     "peft>=0.13.0",
-    "bitsandbytes>=0.44.0",
-    "trl>=0.9.0",
-    # Inference
-    # Note: For ARM64, vLLM must be built from source - see README
-    # API & Web
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "httpx>=0.28.0",
     # Data & Validation
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     # Analysis
     "marimo",
-    # CLI
-    "click>=8.1.0",
+    # CLI & UI
     "rich>=13.0.0",
     # Utilities
     "python-dotenv>=1.0.0",
@@ -44,24 +38,18 @@ dependencies = [
     "jsonlines>=4.0.0",
     "pandas>=2.0.0",
     "altair>=5.0.0",
+    "tqdm>=4.0.0",
     # Monitoring
     "wandb>=0.18.0",
     "weave>=0.51.0",
 ]
 
 [project.optional-dependencies]
-# Development dependencies
-vllm = [
-    "vllm"
-]
-axolotl = [
-    "axolotl"
-]
-
-[project.scripts]
-finetune-generate = "src.cli.generate:cli"
-finetune-serve = "src.cli.serve:cli"
-finetune-data = "scripts.data.generate_synthetic:main"
+# Optional training frameworks
+# Axolotl doesn't support cu13 yet 
+# axolotl = [
+#    "axolotl"
+# ]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -117,41 +105,26 @@ torchvision = [
 torchaudio = [
   { index = "pytorch-cu130", marker = "platform_machine == 'aarch64'" },
 ]
-vllm = { path = "../vllm" }
+xformers = {git="https://github.com/johnnynunez/xformers", branch="main"}
 
 [dependency-groups]
 dev = [
-    "ipython>=8.37.0",
-]
-vllm = [
     "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
-    "marimo>=0.17.0",
-    "ipykernel>=6.29.0",
     "black>=24.0.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
-    "setuptools_scm>=9.2.2",
-    "packaging>=24.2",
-    "groq>=0.33.0",
     "ipython>=8.37.0",
+    "ipykernel>=6.29.0",
+    "groq>=0.33.0",
 ]
 
-# Override vLLM's torch dependency to use PyTorch nightly
+# ARM64 specific torch configuration for DGX Spark
 [tool.uv]
 override-dependencies = [
-  "torch>=2.9.0",  # Allow PyTorch nightly (2.10.0) even though vLLM pins to 2.9.0
+  "torch>=2.9.0",
   "packaging>=24.2",
   "transformers>=4.56.0",
-  "mistral-common[audio]>=1.8.5",
-  "pydantic>=2.12.0",
-  "triton>=3.5.0",
-  "xformers>=0.0.32.post2"
 ]
-no-build-isolation-package = ["vllm"]  # Disable build isolation for vLLM to access torch
 environments = ["platform_machine == 'aarch64'"]  # Only resolve for ARM64 (DGX Spark)
-
-[tool.uv.extra-build-dependencies]
-vllm = ["setuptools_scm"]
-xformers = ["torch"]
+no-build-isolation-package= ["xformers"]

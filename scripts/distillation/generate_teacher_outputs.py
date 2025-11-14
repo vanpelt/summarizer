@@ -98,13 +98,13 @@ def main():
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("data/gpt5nano/train.jsonl"),
+        default=Path("data/synthetic/train.jsonl"),
         help="Input training data"
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/gpt5nano/train_teacher.jsonl"),
+        default=Path("data/synthetic/train_teacher.jsonl"),
         help="Output file with teacher generations"
     )
     parser.add_argument(

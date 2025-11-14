@@ -9,27 +9,19 @@ This script:
 
 Usage:
     python scripts/data/clean_dataset.py \
-        --input data/gpt5nano/train.jsonl \
-        --output data/gpt5nano/train_cleaned.jsonl
+        --input data/synthetic/train.jsonl \
+        --output data/synthetic/train_cleaned.jsonl
 """
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import List, Dict, Any
 
-
-# Production system prompt from prompt.txt
-SYSTEM_PROMPT = """You are a careful assistant that outputs ONLY valid JSON matching the schema:
-{
-  "summary": "<2-4 words, Title Case, no punctuation>",
-  "branch": "<kebab-case, lowercase, [a-z0-9-] only, max 3 words, prefix with a category like bug/, feat/, etc.>"
-}
-Never include explanations or extra keys.
-
-Turn this request for code changes into:
-1) a 2–4 word summary (Title Case),
-2) a friendly git branch name (prefixed kebab-case)."""
+# Add parent directory to path to import from src
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.config import SYSTEM_PROMPT
 
 
 def load_jsonl(file_path: Path) -> List[Dict[str, Any]]:

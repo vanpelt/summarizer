@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import random
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Any
@@ -48,20 +49,12 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 from rich.table import Table
 
+# Add parent directory to path to import from src
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.config import SYSTEM_PROMPT
+
 load_dotenv()
 console = Console()
-
-# System prompt from prompt.txt
-SYSTEM_PROMPT = """You are a careful assistant that outputs ONLY valid JSON matching the schema:
-{
-  "summary": "<2-4 words, Title Case, no punctuation>",
-  "branch": "<kebab-case, lowercase, [a-z0-9-] only, max 3 words, prefix with a category like bug/, feat/, etc.>"
-}
-Never include explanations or extra keys.
-
-Turn this request for code changes into:
-1) a 2-4 word summary (Title Case),
-2) a friendly git branch name (prefixed kebab-case)."""
 
 # Task categories for diverse prompts (from extend_dpo_with_synthetic.py)
 TASK_CATEGORIES = [

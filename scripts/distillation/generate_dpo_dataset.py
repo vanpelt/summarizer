@@ -14,8 +14,8 @@ Usage:
         --teacher-backend ollama \
         --teacher-model gemma3:27b \
         --student-model models/gemma3-270m-student-unsloth-v1 \
-        --input data/gpt5nano/train.jsonl \
-        --output data/gpt5nano/train_dpo.jsonl
+        --input data/synthetic/train.jsonl \
+        --output data/synthetic/train_dpo.jsonl
 """
 
 import argparse
@@ -32,18 +32,9 @@ from unsloth import FastLanguageModel
 import torch
 from openai import OpenAI
 
-
-# Production system prompt from prompt.txt
-SYSTEM_PROMPT = """You are a careful assistant that outputs ONLY valid JSON matching the schema:
-{
-  "summary": "<2-4 words, Title Case, no punctuation>",
-  "branch": "<kebab-case, lowercase, [a-z0-9-] only, max 3 words, prefix with a category like bug/, feat/, etc.>"
-}
-Never include explanations or extra keys.
-
-Turn this request for code changes into:
-1) a 2–4 word summary (Title Case),
-2) a friendly git branch name (prefixed kebab-case)."""
+# Add parent directory to path to import from src
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.config import SYSTEM_PROMPT
 
 
 def load_jsonl(file_path: Path) -> List[Dict[str, Any]]:
@@ -345,13 +336,13 @@ def main():
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("data/gpt5nano/train.jsonl"),
+        default=Path("data/synthetic/train.jsonl"),
         help="Input training data"
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/gpt5nano/train_dpo.jsonl"),
+        default=Path("data/synthetic/train_dpo.jsonl"),
         help="Output DPO preference dataset"
     )
     parser.add_argument(

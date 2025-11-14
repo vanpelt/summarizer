@@ -10,7 +10,7 @@ Shows statistics about the dataset including:
 
 Usage:
     uv run python scripts/distillation/inspect_dpo_dataset.py \
-        data/gpt5nano/train_dpo_extended.jsonl
+        data/synthetic/train_dpo_extended.jsonl
 """
 
 import argparse
@@ -114,7 +114,7 @@ def main():
     if not args.dataset.exists():
         print(f"❌ Error: Dataset not found: {args.dataset}")
         print("\nAvailable datasets:")
-        data_dir = Path("data/gpt5nano")
+        data_dir = Path("data/synthetic")
         if data_dir.exists():
             for file in data_dir.glob("train_dpo*.jsonl"):
                 print(f"  - {file}")

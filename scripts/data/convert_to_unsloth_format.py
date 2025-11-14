@@ -85,13 +85,13 @@ def main():
     parser.add_argument(
         "--input-dir",
         type=Path,
-        default=Path("data/gpt5nano"),
+        default=Path("data/synthetic"),
         help="Input directory with train.jsonl, val.jsonl, test.jsonl",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/gpt5nano_unsloth"),
+        default=Path("data/synthetic_unsloth"),
         help="Output directory for converted files",
     )
     parser.add_argument(

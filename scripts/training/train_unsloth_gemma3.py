@@ -13,8 +13,8 @@ Usage:
 
     # Train with original gpt5nano dataset
     uv run python scripts/training/train_unsloth_gemma3.py \
-        --train-data data/gpt5nano_unsloth/train.jsonl \
-        --eval-data data/gpt5nano_unsloth/val.jsonl \
+        --train-data data/synthetic_unsloth/train.jsonl \
+        --eval-data data/synthetic_unsloth/val.jsonl \
         --output-dir models/gemma3-270m-original \
         --run-name gemma3-270m-original
 

@@ -5,7 +5,7 @@ This guide explains how to generate an enhanced dataset for Gemma3-270M fine-tun
 ## Overview
 
 The `generate_enhanced_dataset.py` script:
-1. Loads existing 432 prompts from `data/gpt5nano/train.jsonl`
+1. Loads existing 432 prompts from `data/synthetic/train.jsonl`
 2. Generates 2000+ new diverse synthetic prompts using OpenAI (gpt-5-mini with low reasoning effort)
 3. Generates JSON responses for all prompts using structured outputs
 4. Converts to Unsloth format (with `conversations` field)

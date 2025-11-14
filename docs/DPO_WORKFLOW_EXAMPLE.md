@@ -19,11 +19,11 @@ just generate-dpo-extended \
   gemma3:27b \
   models/gemma3-270m-student-unsloth-v1 \
   500 \
-  data/gpt5nano/train_dpo_extended.jsonl
+  data/synthetic/train_dpo_extended.jsonl
 ```
 
 **Time**: ~30-40 minutes
-**Output**: `data/gpt5nano/train_dpo_extended.jsonl`
+**Output**: `data/synthetic/train_dpo_extended.jsonl`
 
 This will:
 1. Load your 432 existing training prompts
@@ -38,12 +38,12 @@ If you want to skip synthetic generation, use only existing data:
 just generate-dpo-dataset \
   gemma3:27b \
   models/gemma3-270m-student-unsloth-v1 \
-  data/gpt5nano/train.jsonl \
-  data/gpt5nano/train_dpo.jsonl
+  data/synthetic/train.jsonl \
+  data/synthetic/train_dpo.jsonl
 ```
 
 **Time**: ~10-15 minutes
-**Output**: `data/gpt5nano/train_dpo.jsonl` (432 examples)
+**Output**: `data/synthetic/train_dpo.jsonl` (432 examples)
 
 ### Step 2: Train DPO Model
 
@@ -52,7 +52,7 @@ Train the student model to prefer teacher-like outputs:
 ```bash
 just train-dpo \
   models/gemma3-270m-student-unsloth-v1 \
-  data/gpt5nano/train_dpo_extended.jsonl
+  data/synthetic/train_dpo_extended.jsonl
 ```
 
 **Time**: ~45-90 minutes (3 epochs)
@@ -109,18 +109,18 @@ For even better results, run multiple DPO rounds:
 
 ```bash
 # Round 1
-just generate-dpo-extended gemma3:27b models/gemma3-270m-student-unsloth-v1 500 data/gpt5nano/train_dpo_r1.jsonl
-just train-dpo models/gemma3-270m-student-unsloth-v1 data/gpt5nano/train_dpo_r1.jsonl
+just generate-dpo-extended gemma3:27b models/gemma3-270m-student-unsloth-v1 500 data/synthetic/train_dpo_r1.jsonl
+just train-dpo models/gemma3-270m-student-unsloth-v1 data/synthetic/train_dpo_r1.jsonl
 # Creates: gemma3-270m-student-dpo-v1
 
 # Round 2 (use v1 as new student baseline)
-just generate-dpo-extended gemma3:27b models/gemma3-270m-student-dpo-v1 500 data/gpt5nano/train_dpo_r2.jsonl
-just train-dpo models/gemma3-270m-student-dpo-v1 data/gpt5nano/train_dpo_r2.jsonl
+just generate-dpo-extended gemma3:27b models/gemma3-270m-student-dpo-v1 500 data/synthetic/train_dpo_r2.jsonl
+just train-dpo models/gemma3-270m-student-dpo-v1 data/synthetic/train_dpo_r2.jsonl
 # Creates: gemma3-270m-student-dpo-v2
 
 # Round 3 (diminishing returns after this)
-just generate-dpo-extended gemma3:27b models/gemma3-270m-student-dpo-v2 500 data/gpt5nano/train_dpo_r3.jsonl
-just train-dpo models/gemma3-270m-student-dpo-v2 data/gpt5nano/train_dpo_r3.jsonl
+just generate-dpo-extended gemma3:27b models/gemma3-270m-student-dpo-v2 500 data/synthetic/train_dpo_r3.jsonl
+just train-dpo models/gemma3-270m-student-dpo-v2 data/synthetic/train_dpo_r3.jsonl
 # Creates: gemma3-270m-student-dpo-v3
 ```
 
@@ -167,7 +167,7 @@ uv run python scripts/distillation/compare_models.py \
   --teacher gemma3:27b \
   --student-baseline models/gemma3-270m-student-unsloth-v1 \
   --student-dpo models/gemma3-270m-student-dpo-v1 \
-  --test-data data/gpt5nano/test.jsonl
+  --test-data data/synthetic/test.jsonl
 ```
 
 2. Deploy the best model to production via Ollama

@@ -8,8 +8,8 @@ the student model by learning to prefer teacher-like outputs.
 Usage:
     uv run python scripts/distillation/train_dpo.py \
         --base-model models/gemma3-270m-student-unsloth-v1 \
-        --dataset data/gpt5nano/train_dpo.jsonl \
-        --val-dataset data/gpt5nano/val.jsonl
+        --dataset data/synthetic/train_dpo.jsonl \
+        --val-dataset data/synthetic/val.jsonl
 """
 
 import argparse
@@ -127,13 +127,13 @@ def main():
     parser.add_argument(
         "--dataset",
         type=Path,
-        default=Path("data/gpt5nano/train_dpo.jsonl"),
+        default=Path("data/synthetic/train_dpo.jsonl"),
         help="DPO preference dataset"
     )
     parser.add_argument(
         "--val-dataset",
         type=Path,
-        default=Path("data/gpt5nano/val_dpo.jsonl"),
+        default=Path("data/synthetic/val_dpo.jsonl"),
         help="Validation dataset (DPO format with prompt/chosen/rejected)"
     )
     parser.add_argument(

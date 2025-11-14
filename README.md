@@ -28,8 +28,8 @@ just unsloth-train
 just generate-dpo-extended
 
 # Split dataset for training and evaluation
-DATASET=data/gpt5nano/train_dpo_extended_split.jsonl \
-VAL_DATASET=data/gpt5nano/val_dpo_extended.jsonl \
+DATASET=data/synthetic/train_dpo_extended_split.jsonl \
+VAL_DATASET=data/synthetic/val_dpo_extended.jsonl \
 just train-dpo
 ```
 

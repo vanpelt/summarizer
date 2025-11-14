@@ -4,10 +4,10 @@
 
 ```bash
 # 1. Generate extended DPO dataset (432 existing + 500 synthetic, with JSON enforcement)
-just generate-dpo-extended gemma3:27b models/gemma3-270m-student-unsloth-v1 500 data/gpt5nano/train_dpo_extended.jsonl
+just generate-dpo-extended gemma3:27b models/gemma3-270m-student-unsloth-v1 500 data/synthetic/train_dpo_extended.jsonl
 
 # 2. Train DPO model (auto-increments version)
-just train-dpo models/gemma3-270m-student-unsloth-v1 data/gpt5nano/train_dpo_extended.jsonl
+just train-dpo models/gemma3-270m-student-unsloth-v1 data/synthetic/train_dpo_extended.jsonl
 
 # 3. Export to GGUF
 just export-gguf models/gemma3-270m-student-dpo-v1 gemma3-270m-student-dpo-v1 Q4_K_M
@@ -105,13 +105,13 @@ ollama run <name> --format json '<prompt>'
 ## File Locations
 
 ### Input Data
-- `data/gpt5nano/train.jsonl` - Original training data (432 examples)
-- `data/gpt5nano/val.jsonl` - Validation data (54 examples)
-- `data/gpt5nano/test.jsonl` - Test data (54 examples)
+- `data/synthetic/train.jsonl` - Original training data (432 examples)
+- `data/synthetic/val.jsonl` - Validation data (54 examples)
+- `data/synthetic/test.jsonl` - Test data (54 examples)
 
 ### Generated Datasets
-- `data/gpt5nano/train_dpo.jsonl` - DPO dataset (existing prompts only)
-- `data/gpt5nano/train_dpo_extended.jsonl` - Extended DPO dataset (932 examples)
+- `data/synthetic/train_dpo.jsonl` - DPO dataset (existing prompts only)
+- `data/synthetic/train_dpo_extended.jsonl` - Extended DPO dataset (932 examples)
 
 ### Models
 - `models/gemma3-270m-student-unsloth-v1/` - Phase 1 SFT student
@@ -169,7 +169,7 @@ Optional:
 ### Invalid JSON in dataset
 ```bash
 # Check enforcement is enabled (default)
-just inspect-dpo-dataset data/gpt5nano/train_dpo_extended.jsonl
+just inspect-dpo-dataset data/synthetic/train_dpo_extended.jsonl
 
 # Re-generate with explicit flag
 --enforce-json --greedy-student
