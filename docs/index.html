@@ -19,8 +19,28 @@
         let isModelLoaded = false;
         let isGenerating = false;
 
-        // Model configuration - using wllama's native HuggingFace support
-        const HUGGINGFACE_MODEL_ID = 'vanpelt/summarizer';
+        // Model configuration - detect from URL or use defaults
+        const urlParams = new URLSearchParams(window.location.search);
+        const modelNameParam = urlParams.get('model');
+        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+        // Determine model source and format
+        let MODEL_SOURCE = 'huggingface'; // 'huggingface' or 'local'
+        let MODEL_NAME = modelNameParam || 'gemma3-270m-synthetic-v11';
+        let MODEL_FORMAT = 'two-line'; // 'json' or 'two-line' (default to two-line, will auto-detect from output)
+
+        // Detect format from model name (for local models)
+        if (MODEL_NAME.includes('json')) {
+            MODEL_FORMAT = 'json';
+        }
+
+        // Use local models if on localhost and model param provided
+        if (isLocalhost && modelNameParam) {
+            MODEL_SOURCE = 'local';
+        }
+
+        // HuggingFace defaults (fallback)
+        const HUGGINGFACE_MODEL_ID = 'vanpelt/catnip-summarizer';
         const HUGGINGFACE_FILE_PATH = 'gemma3-270m-summarizer-Q4_K_M.gguf';
 
         // Sample prompts from test data
@@ -34,13 +54,36 @@
             "Implement defense-in-depth on XML parsing. Use libxml2 with these settings: xmlReadOptions opts = XML_PARSE_NONET | XML_PARSE_NOENT | XML_PARSE_DTDATTR | XML_PARSE_DTDVALID; but make sure to remove XML_PARSE_NOENT to avoid entity expansion; set XML_PARSE_NONET to block external resources. Add explicit xmlDisableEntityLoader for older libxml2. Write a fuzzer corpora.",
             "Write integration tests that validate SDK initialization with environment variable overrides.",
             "There's a stack trace on malformed multipart form data leading to read beyond boundary. Add null checks and fail with 400. Add fuzz tests and size checks to cap total parts and per-part size.",
-            "This is fantastic, let's make this happen!  Be sure to start by creating a new branch in our repo for this feature."
+            "This is fantastic, let's make this happen!  Be sure to start by creating a new branch in our repo for this feature.",
+            // Additional prompts from synthetic data
+            "Refactor IPC channel names to a central enum file to avoid string mismatches across renderer and main.",
+            "Extract repeated CSS-in-TS styles into a shared theme object and replace inline style objects.",
+            "Split the large window creation function in main.ts into smaller helpers for readability and testing.",
+            "Replace any usage of 'any' in the data store module with proper interfaces and generics.",
+            "Move all hardcoded file paths into a config.ts module and update imports accordingly.",
+            "Consolidate duplicate utility functions for deep cloning into a single util with unit tests.",
+            "Refactor the settings modal to use controlled components instead of uncontrolled refs.",
+            "Change synchronous fs calls in the main process to async/await with promises.",
+            "Unify error handling by creating an AppError class and replacing ad-hoc error objects.",
+            "Replace callbacks in the legacy API client with Promise-based methods and update callers.",
+            "Rename ambiguous variable names in the network layer (e.g. res -> response) for clarity.",
+            "Refactor toolbar components to accept a single props object instead of many boolean props.",
+            "Move database schema types to a shared types module used by both main and workers.",
+            "Hoist repeated constants (timeouts, limits) to a constants.ts file and centralize usage.",
+            "Refactor debounce implementations into a reusable hook or util to avoid duplicated logic.",
+            "Convert deprecated electron.remote usage to contextBridge + IPC in renderer processes.",
+            "Abstract file import parsers behind a registry interface for extensibility.",
+            "Refactor the logger to support per-module log levels and replace console.log calls.",
+            "Extract route/component lazy loading into a single helper function to deduplicate code.",
+            "Refactor legacy state management to use a single source of truth (e.g., replace multiple event emitters with Redux or Zustand)."
         ];
 
+        // Prompt tracking to avoid duplicates
+        let usedPromptIndices = new Set();
         let currentPromptIndex = 0;
 
-        // Default system prompt
-        const DEFAULT_SYSTEM_PROMPT = `You are a careful assistant that outputs ONLY valid JSON matching the schema:
+        // Default system prompts for different formats
+        const DEFAULT_SYSTEM_PROMPT_JSON = `You are a careful assistant that outputs ONLY valid JSON matching the schema:
 {
   "summary": "<2-4 words, Title Case, no punctuation>",
   "branch": "<kebab-case, lowercase, [a-z0-9-] only, max 3 words, prefix with a category like bug/, feat/, etc.>"
@@ -50,6 +93,34 @@ Never include explanations or extra keys.
 Turn this request for code changes into:
 1) a 2–4 word summary (Title Case),
 2) a friendly git branch name (prefixed kebab-case).`;
+
+        const DEFAULT_SYSTEM_PROMPT_TWO_LINE = `You are a careful assistant that generates task summaries and git branch names.
+
+Output EXACTLY two lines with no other text:
+Line 1: A 2-4 word summary (Title Case, no punctuation)
+Line 2: A git branch name (kebab-case, lowercase, [a-z0-9-] only, max 4 words, prefix with a category like bug/, feat/, etc.)
+
+Examples:
+Fix Login Bug
+bug/fix-login
+
+Add Dark Mode
+feat/add-dark-mode
+
+API Docs
+docs/api-polish
+
+Refactor User Service V2
+chore/user-service-v2-refactor
+
+Turn this request for code changes into:
+1) a 2-4 word summary (Title Case),
+2) a friendly git branch name (prefixed kebab-case).`;
+
+        // Select appropriate system prompt based on model format
+        const DEFAULT_SYSTEM_PROMPT = MODEL_FORMAT === 'two-line'
+            ? DEFAULT_SYSTEM_PROMPT_TWO_LINE
+            : DEFAULT_SYSTEM_PROMPT_JSON;
 
         // DOM elements
         const modelStatus = document.getElementById('modelStatus');
@@ -86,11 +157,12 @@ Turn this request for code changes into:
         let tokenCount = 0;
         let statsInterval = null;
 
-        // Prefill tracking
-        let prefillTimer = null;
-        let isPrefilling = false;
-        let lastPrompt = '';
+        // Cache tracking
         let nSystemTokens = 0; // Track number of tokens in cached system prompt
+        let lastTemperature = 0.7;
+        let lastTopP = 0.95;
+        let cacheWarmTimer = null;
+        let isWarmingCache = false;
 
         // Device and network detection
         function isMobileDevice() {
@@ -129,13 +201,29 @@ Turn this request for code changes into:
 
             temperatureSlider.addEventListener('input', (e) => {
                 temperatureValue.textContent = parseFloat(e.target.value).toFixed(2);
+
+                // Debounce cache warming - wait 800ms after user stops adjusting
+                if (cacheWarmTimer) {
+                    clearTimeout(cacheWarmTimer);
+                }
+                cacheWarmTimer = setTimeout(() => {
+                    warmCacheWithSamplingParams();
+                }, 800);
             });
 
             topPSlider.addEventListener('input', (e) => {
                 topPValue.textContent = parseFloat(e.target.value).toFixed(2);
+
+                // Debounce cache warming - wait 800ms after user stops adjusting
+                if (cacheWarmTimer) {
+                    clearTimeout(cacheWarmTimer);
+                }
+                cacheWarmTimer = setTimeout(() => {
+                    warmCacheWithSamplingParams();
+                }, 800);
             });
 
-            // System prompt change handler - clear cache and re-prefill
+            // System prompt change handler - clear cache and re-warm
             systemPromptTextarea.addEventListener('change', async () => {
                 if (wllama && isModelLoaded && !isGenerating) {
                     try {
@@ -177,28 +265,6 @@ Turn this request for code changes into:
                 }
             });
 
-            // Debounced prefill on input change
-            promptInput.addEventListener('input', () => {
-                if (!isModelLoaded || isGenerating) return;
-
-                const currentPrompt = promptInput.value.trim();
-
-                // Clear existing timer
-                if (prefillTimer) {
-                    clearTimeout(prefillTimer);
-                }
-
-                // Don't prefill if prompt is empty or hasn't changed
-                if (!currentPrompt || currentPrompt === lastPrompt) {
-                    return;
-                }
-
-                // Set new timer for 1 second
-                prefillTimer = setTimeout(() => {
-                    prefillPrompt(currentPrompt);
-                }, 1000);
-            });
-
             // Conditionally auto-load model or show download button
             if (shouldAutoLoad()) {
                 updateStatus('Auto-loading model...', 'text-blue-600');
@@ -214,11 +280,18 @@ Turn this request for code changes into:
             }
         });
 
-        async function prefillSystemPrompt() {
-            // Prefill system instruction + "Request: " prefix (common to all requests)
+        async function prefillSystemPrompt(temp = null, topP = null) {
+            // Use provided params or fall back to current slider values
+            const temperature = temp !== null ? temp : parseFloat(temperatureSlider.value);
+            const topPValue = topP !== null ? topP : parseFloat(topPSlider.value);
+
+            // Prefill system instruction
             try {
                 updateStatus('Warming KV cache...', 'text-blue-500');
 
+                // For two-line models, we need to include the system prompt in the chat template
+                // Gemma doesn't have a separate system role, so system content gets merged into user message
+                // We'll always add an empty user message to trigger the chat template formatting
                 const messages = [
                     {
                         role: 'system',
@@ -226,25 +299,25 @@ Turn this request for code changes into:
                     },
                     {
                         role: 'user',
-                        content: 'Request:\n\n'
+                        content: ''  // Empty user message to trigger template formatting
                     }
                 ];
 
-                // Prefill to cache the system instructions + request prefix (template applied automatically)
+                // Prefill to cache the system instructions (template applied automatically)
                 await wllama.createChatCompletion(messages, {
                     nPredict: 1,
                     sampling: {
-                        temp: 0.7,
-                        top_p: 0.95,
+                        temp: temperature,
+                        top_p: topPValue,
                         top_k: 64,
                     },
                     useCache: true,
                 });
 
-                // Track how many tokens are cached (system + template + "Request:\n\n")
+                // Track how many tokens are cached
                 const cachedTokens = await wllama.getCachedTokens();
                 nSystemTokens = cachedTokens.length;
-                console.log(`System prompt + request prefix cached (${nSystemTokens} tokens)`);
+                console.log(`System prompt cached (${nSystemTokens} tokens) with temp=${temperature}, top_p=${topPValue}`);
 
             } catch (error) {
                 console.error('System prefill error:', error);
@@ -252,53 +325,39 @@ Turn this request for code changes into:
             }
         }
 
-        async function prefillPrompt(prompt) {
-            // Don't prefill if already prefilling or generating
-            if (isPrefilling || isGenerating) {
+        async function warmCacheWithSamplingParams() {
+            if (!isModelLoaded || isGenerating || isWarmingCache) {
+                return;
+            }
+
+            const temperature = parseFloat(temperatureSlider.value);
+            const topP = parseFloat(topPSlider.value);
+
+            // Check if params actually changed
+            if (temperature === lastTemperature && topP === lastTopP) {
                 return;
             }
 
             try {
-                isPrefilling = true;
-                updateStatus('Prefilling prompt...', 'text-blue-500');
+                isWarmingCache = true;
+                console.log(`Sampling params changed (temp: ${lastTemperature}->${temperature}, top_p: ${lastTopP}->${topP}), re-warming cache`);
 
-                // Get parameters
-                const temperature = parseFloat(temperatureSlider.value);
-                const topP = parseFloat(topPSlider.value);
+                // Clear cache and re-warm with new params
+                await wllama.kvClear();
+                nSystemTokens = 0;
+                lastTemperature = temperature;
+                lastTopP = topP;
 
-                const messages = [
-                    {
-                        role: 'system',
-                        content: systemPromptTextarea.value
-                    },
-                    {
-                        role: 'user',
-                        content: `Request:\n\n${prompt}`
-                    }
-                ];
-
-                // Prefill by generating just 1 token to warm up KV cache
-                await wllama.createChatCompletion(messages, {
-                    nPredict: 1,
-                    sampling: {
-                        temp: temperature,
-                        top_p: topP,
-                        top_k: 64,
-                    },
-                    useCache: true, // Enable KV cache for prefill
-                });
-
-                lastPrompt = prompt;
-                updateStatus('Ready (prefilled)', 'text-green-600');
-
+                await prefillSystemPrompt(temperature, topP);
+                updateStatus('Model ready!', 'text-green-600');
             } catch (error) {
-                console.error('Prefill error:', error);
-                // Don't show error to user, just silently fail
+                console.error('Failed to re-warm cache:', error);
                 updateStatus('Model loaded', 'text-green-600');
             } finally {
-                isPrefilling = false;
+                isWarmingCache = false;
             }
         }
+
 
         async function loadModel() {
             if (isModelLoaded) {
@@ -325,18 +384,38 @@ Turn this request for code changes into:
                     allowOffline: true  // Enable caching for faster subsequent loads
                 });
 
-                updateStatus('Loading model from HuggingFace...', 'text-blue-600');
+                // Load model from appropriate source
+                if (MODEL_SOURCE === 'local') {
+                    updateStatus(`Loading local model: ${MODEL_NAME}...`, 'text-blue-600');
+                    console.log(`Loading local model: ${MODEL_NAME}`);
 
-                // Load the model from HuggingFace using native wllama support
-                await wllama.loadModelFromHF(HUGGINGFACE_MODEL_ID, HUGGINGFACE_FILE_PATH, {
-                    n_ctx: 2048,  // Context size
-                    n_threads: navigator.hardwareConcurrency || 4,  // Use all CPU cores
-                    useCache: true,  // Enable browser caching for faster subsequent loads
-                    progressCallback: ({ loaded, total }) => {
-                        const percent = Math.round((loaded / total) * 100);
-                        updateProgress(percent, `Loading model: ${percent}%`);
-                    }
-                });
+                    // Construct absolute URL for local model
+                    const modelUrl = `${window.location.origin}/gguf/${MODEL_NAME}.gguf`;
+                    console.log(`Model URL: ${modelUrl}`);
+
+                    await wllama.loadModelFromUrl(modelUrl, {
+                        n_ctx: 2048,
+                        n_threads: navigator.hardwareConcurrency || 4,
+                        useCache: true,
+                        progressCallback: ({ loaded, total }) => {
+                            const percent = Math.round((loaded / total) * 100);
+                            updateProgress(percent, `Loading ${MODEL_NAME}: ${percent}%`);
+                        }
+                    });
+                } else {
+                    updateStatus('Loading model from HuggingFace...', 'text-blue-600');
+
+                    // Load the model from HuggingFace using native wllama support
+                    await wllama.loadModelFromHF(HUGGINGFACE_MODEL_ID, HUGGINGFACE_FILE_PATH, {
+                        n_ctx: 2048,  // Context size
+                        n_threads: navigator.hardwareConcurrency || 4,  // Use all CPU cores
+                        useCache: true,  // Enable browser caching for faster subsequent loads
+                        progressCallback: ({ loaded, total }) => {
+                            const percent = Math.round((loaded / total) * 100);
+                            updateProgress(percent, `Loading model: ${percent}%`);
+                        }
+                    });
+                }
 
                 isModelLoaded = true;
                 loadingProgress.classList.add('hidden');
@@ -390,27 +469,7 @@ Turn this request for code changes into:
                 return;
             }
 
-            // Wait for prefill to complete if it's running
-            if (isPrefilling) {
-                updateStatus('Waiting for prefill to complete...', 'text-blue-600');
-                // Poll until prefill is done (with timeout)
-                let waitCount = 0;
-                while (isPrefilling && waitCount < 100) { // Max 10 seconds wait
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                    waitCount++;
-                }
-            }
-
-            // Track if we found valid output (needs to be accessible in catch block)
-            let foundValidOutput = false;
-
             try {
-                // Cancel any pending prefill timer
-                if (prefillTimer) {
-                    clearTimeout(prefillTimer);
-                    prefillTimer = null;
-                }
-
                 isGenerating = true;
                 generateBtn.disabled = true;
                 generateBtn.textContent = 'Generating...';
@@ -437,7 +496,19 @@ Turn this request for code changes into:
                 const topP = parseFloat(topPSlider.value);
                 const maxTokens = parseInt(maxTokensInput.value);
 
-                // Build messages array with assistant message prefix to encourage JSON output
+                // If sampling params changed and cache wasn't warmed yet, do it now
+                const samplingChanged = (temperature !== lastTemperature) || (topP !== lastTopP);
+                if (samplingChanged && !isWarmingCache) {
+                    // Cancel any pending warm timer
+                    if (cacheWarmTimer) {
+                        clearTimeout(cacheWarmTimer);
+                        cacheWarmTimer = null;
+                    }
+                    // Warm immediately
+                    await warmCacheWithSamplingParams();
+                }
+
+                // Build messages array
                 const messages = [
                     {
                         role: 'system',
@@ -445,76 +516,53 @@ Turn this request for code changes into:
                     },
                     {
                         role: 'user',
-                        content: `Request:\n\n${prompt}`
-                    },
-                    {
-                        role: 'assistant',
-                        content: '{"summary": "'  // Start JSON to guide the model
+                        content: prompt
                     }
                 ];
 
-                // Keep system prompt in cache, remove everything after it (user prompt + previous output)
-                // This way we only recompute the user's specific prompt, not the whole system prompt
+                // Note: We don't add assistant prefix anymore - let the model output naturally
+                // The parsing logic will auto-detect JSON vs two-line format from the output
+
+                // KV cache management: Keep system prompt, remove user + output
                 if (nSystemTokens > 0) {
-                    updateStatus('Preparing KV cache...', 'text-blue-600');
-                    await wllama.kvRemove(nSystemTokens, -1);
-                    console.log(`Kept ${nSystemTokens} system tokens, removed rest`);
+                    const currentCacheSize = (await wllama.getCachedTokens()).length;
+                    if (currentCacheSize > nSystemTokens) {
+                        updateStatus('Preparing KV cache...', 'text-blue-600');
+                        await wllama.kvRemove(nSystemTokens, -1);
+                        const afterSize = (await wllama.getCachedTokens()).length;
+                        console.log(`Cache: ${currentCacheSize} -> ${afterSize} tokens (kept system, removed user+output)`);
+                    } else {
+                        console.log(`Cache already clean (${currentCacheSize} tokens <= ${nSystemTokens} system)`);
+                    }
                 }
 
                 updateStatus('Generating...', 'text-blue-600');
 
-                // Abort controller for early stopping
-                const abortController = new AbortController();
-
                 // Track accumulated text
                 let accumulatedText = '';
 
-                // Helper to parse and render JSON output
-                function tryParseAndRender(text) {
-                    // wllama returns the full completion, which already includes our assistant prefix
-                    // So text should already start with '{"summary": "'
-                    // Just show it as-is
+                // Helper to render output as it streams
+                function renderStreamingOutput(text) {
+                    // Show raw output as it streams
                     rawOutput.textContent = text;
                     rawOutput.classList.remove('hidden');
-
-                    try {
-                        // Try to parse as JSON directly (it already has the prefix)
-                        const parsed = JSON.parse(text);
-
-                        // Check if we have both required fields
-                        if (parsed.summary && parsed.branch) {
-                            // Render pretty output
-                            outputSummary.textContent = parsed.summary;
-                            outputBranch.textContent = parsed.branch;
-                            outputArea.classList.remove('hidden');
-
-                            // Hide raw output once we have valid JSON
-                            rawOutput.classList.add('hidden');
-
-                            // Store formatted JSON in raw output for debugging
-                            rawOutput.textContent = JSON.stringify(parsed, null, 2);
-
-                            return true;
-                        }
-                    } catch (e) {
-                        // Not valid JSON yet, keep accumulating
-                        // Raw output is already visible showing progress
-                    }
-
-                    return false;
                 }
 
                 // Generate with streaming using onNewToken callback
+                // Add random seed to ensure temperature actually affects output
+                const seed = Math.floor(Math.random() * 4294967295);
+                console.log(`Generating with seed=${seed}, temp=${temperature}, top_p=${topP}`);
+
                 await wllama.createChatCompletion(messages, {
                     nPredict: maxTokens,
                     sampling: {
                         temp: temperature,
                         top_p: topP,
                         top_k: 64,
+                        seed: seed,  // Random seed ensures temperature has effect
                     },
                     useCache: true,
                     stopTokens: ['<end_of_turn>', '<eos>'],
-                    abortSignal: abortController.signal,
                     onNewToken: (token, piece, currentText) => {
                         // Increment token count
                         tokenCount++;
@@ -522,13 +570,8 @@ Turn this request for code changes into:
                         // Accumulate text (currentText already has our assistant prefix stripped by wllama)
                         accumulatedText = currentText;
 
-                        // Check if we have valid output and should stop early
-                        if (!foundValidOutput && tryParseAndRender(currentText)) {
-                            foundValidOutput = true;
-                            console.log('Found valid JSON output, stopping generation early');
-                            abortController.abort();
-                            return;
-                        }
+                        // Just show streaming output, don't try to parse yet
+                        renderStreamingOutput(currentText);
                     }
                 });
 
@@ -539,32 +582,76 @@ Turn this request for code changes into:
                 }
                 updateStats(); // Final update
 
-                // Final attempt to parse if we didn't get valid JSON during streaming
-                if (!foundValidOutput && accumulatedText) {
-                    tryParseAndRender(accumulatedText);
+                // Parse final output
+                console.log('Final raw output:', JSON.stringify(accumulatedText));
+
+                let summary = null;
+                let branch = null;
+
+                // Auto-detect format based on output content
+                const trimmedOutput = accumulatedText.trim();
+                const looksLikeJson = trimmedOutput.startsWith('{');
+
+                if (looksLikeJson) {
+                    // Parse JSON format
+                    try {
+                        const parsed = JSON.parse(trimmedOutput);
+                        if (parsed.summary && parsed.branch) {
+                            summary = parsed.summary;
+                            branch = parsed.branch;
+                            console.log('JSON parsed:', { summary, branch });
+                        }
+                    } catch (e) {
+                        console.error('Failed to parse JSON:', e);
+                        // Fall back to two-line parsing if JSON fails
+                        const lines = trimmedOutput.split('\n');
+                        if (lines.length >= 2) {
+                            summary = lines[0].trim();
+                            branch = lines[1].trim();
+                            console.log('Two-line parsed (JSON fallback):', { summary, branch });
+                        }
+                    }
+                } else {
+                    // Parse two-line format
+                    const lines = trimmedOutput.split('\n');
+                    if (lines.length >= 2) {
+                        summary = lines[0].trim();
+                        branch = lines[1].trim();
+                        console.log('Two-line parsed:', { summary, branch });
+                    }
                 }
 
-                // Save this prompt as the last generated one
-                lastPrompt = prompt;
+                // Render final output
+                if (summary && branch) {
+                    outputSummary.textContent = summary;
+                    outputBranch.textContent = branch;
+                    outputArea.classList.remove('hidden');
+
+                    // Hide raw output after showing final result
+                    setTimeout(() => {
+                        rawOutput.classList.add('hidden');
+                        rawOutput.textContent = MODEL_FORMAT === 'json'
+                            ? JSON.stringify({ summary, branch }, null, 2)
+                            : `${summary}\n${branch}`;
+                    }, 500);
+                } else {
+                    console.error('Failed to extract summary and branch');
+                    errorOutput.textContent = 'Failed to parse model output. Check console for details.';
+                    errorOutput.classList.remove('hidden');
+                }
 
                 updateStatus('Generation complete', 'text-green-600');
 
             } catch (error) {
-                // Ignore abort errors (expected when we stop early)
-                if (error.name === 'AbortError' || foundValidOutput) {
-                    console.log('Generation stopped early (valid output found)');
-                    updateStatus('Generation complete', 'text-green-600');
-                } else {
-                    console.error('Error generating text:', error);
-                    updateStatus(`Error: ${error.message}`, 'text-red-600');
-                    errorOutput.textContent = `Error: ${error.message}`;
-                    errorOutput.classList.remove('hidden');
+                console.error('Error generating text:', error);
+                updateStatus(`Error: ${error.message}`, 'text-red-600');
+                errorOutput.textContent = `Error: ${error.message}`;
+                errorOutput.classList.remove('hidden');
 
-                    // Show raw output for debugging if we have accumulated text
-                    if (accumulatedText) {
-                        rawOutput.textContent = 'Partial output:\n' + accumulatedText;
-                        rawOutput.classList.remove('hidden');
-                    }
+                // Show raw output for debugging if we have accumulated text
+                if (accumulatedText) {
+                    rawOutput.textContent = 'Partial output:\n' + accumulatedText;
+                    rawOutput.classList.remove('hidden');
                 }
             } finally {
                 // Stop stats interval
@@ -610,14 +697,9 @@ Turn this request for code changes into:
             errorOutput.textContent = '';
             statsDisplay.classList.add('hidden');
             tokenCount = 0;
-            lastPrompt = ''; // Reset prefill cache
             if (statsInterval) {
                 clearInterval(statsInterval);
                 statsInterval = null;
-            }
-            if (prefillTimer) {
-                clearTimeout(prefillTimer);
-                prefillTimer = null;
             }
 
             // Clear KV cache and re-warm with system prompt only
@@ -649,22 +731,26 @@ Turn this request for code changes into:
         }
 
         function loadRandomPrompt() {
-            // Pick a random prompt
-            currentPromptIndex = Math.floor(Math.random() * SAMPLE_PROMPTS.length);
+            // If we've shown all prompts, reset the tracking
+            if (usedPromptIndices.size >= SAMPLE_PROMPTS.length) {
+                usedPromptIndices.clear();
+            }
+
+            // Build array of unused indices
+            const unusedIndices = [];
+            for (let i = 0; i < SAMPLE_PROMPTS.length; i++) {
+                if (!usedPromptIndices.has(i)) {
+                    unusedIndices.push(i);
+                }
+            }
+
+            // Pick a random unused prompt
+            const randomIndex = Math.floor(Math.random() * unusedIndices.length);
+            currentPromptIndex = unusedIndices[randomIndex];
+            usedPromptIndices.add(currentPromptIndex);
+
             promptInput.value = SAMPLE_PROMPTS[currentPromptIndex];
             promptInput.focus();
-
-            // Trigger prefill if model is ready
-            if (isModelLoaded && !isGenerating) {
-                // Clear any existing prefill timer
-                if (prefillTimer) {
-                    clearTimeout(prefillTimer);
-                }
-                // Prefill after a short delay
-                prefillTimer = setTimeout(() => {
-                    prefillPrompt(SAMPLE_PROMPTS[currentPromptIndex]);
-                }, 500);
-            }
         }
     </script>
 </head>
@@ -676,7 +762,7 @@ Turn this request for code changes into:
                 Summarizer Browser Inference
             </h1>
             <p class="text-gray-600">
-                Run's a fine-tuned Gemma3-270M model in your browser.  The model converts prompts inteded for coding agents into a 2-4 word summary and a git branch name.  You can find the <a href="https://github.com/vanpelt/summarizer" class="text-blue-600 underline hover:text-blue-700">source code on GitHub</a>, the <a href="https://wandb.ai/vanpelt/summarizer/runs/0t4lcgpb" class="text-blue-600 underline hover:text-blue-700">training run on Weights & Biases</a>, and the <a href="https://huggingface.co/vanpelt/summarizer" class="text-blue-600 underline hover:text-blue-700">model on HuggingFace</a>.
+                Run's a fine-tuned Gemma3-270M model in your browser.  The model converts prompts inteded for coding agents into a 2-4 word summary and a git branch name.  You can find the <a href="https://github.com/vanpelt/summarizer" class="text-blue-600 underline hover:text-blue-700">source code on GitHub</a>, the <a href="https://wandb.ai/vanpelt/summarizer/runs/0t4lcgpb" class="text-blue-600 underline hover:text-blue-700">training run on Weights & Biases</a>, and the <a href="https://huggingface.co/vanpelt/catnip-summarizer" class="text-blue-600 underline hover:text-blue-700">model on HuggingFace</a>.
             </p>
         </div>
 
@@ -686,7 +772,11 @@ Turn this request for code changes into:
             <div class="flex items-center justify-between mb-4">
                 <div>
                     <h2 class="text-xl font-semibold text-gray-800">Summarizer</h2>
-                    <p class="text-xs text-gray-500">Q4_K_M quantized, 242MB</p>
+                    <p class="text-xs text-gray-500">
+                        <script>
+                            document.write(`${MODEL_NAME} (${MODEL_FORMAT}) • Q4_K_M • ${MODEL_SOURCE === 'local' ? 'Local' : 'HuggingFace'}`);
+                        </script>
+                    </p>
                 </div>
                 <div id="modelStatus" class="text-sm font-medium text-blue-600">
                     Loading...
@@ -822,7 +912,7 @@ Turn this request for code changes into:
                             rows="6"
                             class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-xs"
                         ></textarea>
-                        <p class="text-xs text-gray-500 mt-1">Changing this will clear the cache and re-prefill</p>
+                        <p class="text-xs text-gray-500 mt-1">Changing this will clear and re-warm the cache</p>
                     </div>
 
                     <!-- Parameters Grid -->
@@ -879,7 +969,7 @@ Turn this request for code changes into:
         <div class="mt-8 text-center text-sm text-gray-500">
             <p>Powered by <a href="https://github.com/ngxson/wllama" class="text-blue-600 hover:underline">wllama</a> (llama.cpp + WebAssembly)</p>
             <p class="mt-1">
-                Model: <a href="https://huggingface.co/vanpelt/summarizer" class="text-blue-600 hover:underline">vanpelt/summarizer</a> (Q4_K_M, 242MB)
+                Model: <a href="https://huggingface.co/vanpelt/catnip-summarizer" class="text-blue-600 hover:underline">vanpelt/catnip-summarizer</a> (Q4_K_M, 242MB)
             </p>
         </div>
     </div>

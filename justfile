@@ -152,15 +152,21 @@ unsloth-shell IMAGE="spark-unsloth":
 
 # Train with Unsloth in Docker (recommended for GB10)
 # Configure via environment variables to override script defaults:
+#   MODEL_VARIANT=1b just unsloth-train  # Train 1B model
+#   MODEL_VARIANT=4b just unsloth-train  # Train 4B model
+#   MODEL_VARIANT=12b just unsloth-train  # Train 12B model
+#   MODEL_VARIANT=27b just unsloth-train  # Train 27B model
 #   TRAIN_DATA=data/custom/train.jsonl just unsloth-train
 #   EVAL_DATA=data/custom/test.jsonl just unsloth-train
 #   OUTPUT_DIR=models/gemma3-270m-v2 RUN_NAME=gemma3-270m-v2 just unsloth-train
 #   EPOCHS=5 BATCH_SIZE=4 MAX_MEMORY_GB=100 just unsloth-train
 #   MAX_STEPS=100 just unsloth-train  # Override epochs with max_steps
 #   LR=5e-5 just unsloth-train  # Override learning rate
+#   NUM_EVAL_EXAMPLES=20 just unsloth-train  # Log 20 eval examples
 unsloth-train IMAGE="spark-unsloth":
     #!/usr/bin/env bash
     # Read environment variables with defaults from script
+    MODEL_VARIANT="{{ env('MODEL_VARIANT', '') }}"
     TRAIN_DATA="{{ env('TRAIN_DATA', '') }}"
     EVAL_DATA="{{ env('EVAL_DATA', '') }}"
     OUTPUT_DIR="{{ env('OUTPUT_DIR', '') }}"
@@ -170,11 +176,13 @@ unsloth-train IMAGE="spark-unsloth":
     MAX_MEMORY_GB="{{ env('MAX_MEMORY_GB', '') }}"
     MAX_STEPS="{{ env('MAX_STEPS', '') }}"
     LR="{{ env('LR', '') }}"
+    NUM_EVAL_EXAMPLES="{{ env('NUM_EVAL_EXAMPLES', '') }}"
 
     echo "Starting Unsloth training in Docker..."
 
     # Build command arguments from environment variables
     CMD="python scripts/training/train_unsloth_gemma3.py"
+    [ -n "$MODEL_VARIANT" ] && CMD="$CMD --model-variant $MODEL_VARIANT" && echo "  Model variant: $MODEL_VARIANT"
     [ -n "$TRAIN_DATA" ] && CMD="$CMD --train-data $TRAIN_DATA" && echo "  Train data: $TRAIN_DATA"
     [ -n "$EVAL_DATA" ] && CMD="$CMD --eval-data $EVAL_DATA" && echo "  Eval data: $EVAL_DATA"
     [ -n "$OUTPUT_DIR" ] && CMD="$CMD --output-dir $OUTPUT_DIR" && echo "  Output dir: $OUTPUT_DIR"
@@ -184,6 +192,86 @@ unsloth-train IMAGE="spark-unsloth":
     [ -n "$MAX_MEMORY_GB" ] && CMD="$CMD --max-memory-gb $MAX_MEMORY_GB" && echo "  Max memory: ${MAX_MEMORY_GB}GB"
     [ -n "$MAX_STEPS" ] && CMD="$CMD --max-steps $MAX_STEPS" && echo "  Max steps: $MAX_STEPS"
     [ -n "$LR" ] && CMD="$CMD --learning-rate $LR" && echo "  Learning rate: $LR"
+    [ -n "$NUM_EVAL_EXAMPLES" ] && CMD="$CMD --num-eval-examples $NUM_EVAL_EXAMPLES" && echo "  Eval examples: $NUM_EVAL_EXAMPLES"
+
+    docker run --rm \
+        --gpus=all \
+        --net=host \
+        --ipc=host \
+        --ulimit memlock=-1 \
+        --ulimit stack=67108864 \
+        -v $(pwd):/workspace \
+        -v ~/.netrc:/root/.netrc:ro \
+        -v ~/.cache/uv:/root/.cache/uv \
+        -v ~/.cache/huggingface:/root/.cache/huggingface \
+        -v ~/.cache/wandb:/root/.cache/wandb \
+        -w /workspace \
+        -e WANDB_PROJECT=summarizer \
+        -e WANDB_API_KEY=${WANDB_API_KEY:-} \
+        -e OPENAI_API_KEY=${OPENAI_API_KEY:-} \
+        -e HF_TOKEN=${HF_TOKEN:-} \
+        -e CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
+        -e UV_NO_PROJECT=1 \
+        {{IMAGE}} \
+        bash -c "rm -rf /workspace/unsloth_compiled_cache /tmp/torchinductor_* && $CMD"
+
+# Shortcut recipes for training specific model variants
+unsloth-train-270m:
+    MODEL_VARIANT=270m just unsloth-train
+
+unsloth-train-1b:
+    MODEL_VARIANT=1b just unsloth-train
+
+unsloth-train-4b:
+    MODEL_VARIANT=4b just unsloth-train
+
+unsloth-train-12b:
+    MODEL_VARIANT=12b just unsloth-train
+
+unsloth-train-27b:
+    MODEL_VARIANT=27b just unsloth-train
+
+# Convert JSON format datasets to two-line format
+convert-two-line:
+    uv run python scripts/data/convert_to_two_line.py
+
+# Train with two-line format datasets
+# This uses the same unsloth training but with two-line format data
+unsloth-train-two-line IMAGE="spark-unsloth":
+    #!/usr/bin/env bash
+    # Override defaults for two-line format training
+    TRAIN_DATA="{{ env('TRAIN_DATA', 'data/synthetic_two_line/train.jsonl') }}"
+    EVAL_DATA="{{ env('EVAL_DATA', 'data/synthetic_two_line/test.jsonl') }}"
+    OUTPUT_DIR="{{ env('OUTPUT_DIR', 'models/gemma3-270m-synthetic-two-line-v1') }}"
+    RUN_NAME="{{ env('RUN_NAME', 'gemma3-270m-synthetic-two-line-v1') }}"
+    MODEL_VARIANT="{{ env('MODEL_VARIANT', '') }}"
+    EPOCHS="{{ env('EPOCHS', '') }}"
+    BATCH_SIZE="{{ env('BATCH_SIZE', '') }}"
+    MAX_MEMORY_GB="{{ env('MAX_MEMORY_GB', '') }}"
+    MAX_STEPS="{{ env('MAX_STEPS', '') }}"
+    LR="{{ env('LR', '') }}"
+    NUM_EVAL_EXAMPLES="{{ env('NUM_EVAL_EXAMPLES', '') }}"
+
+    echo "Starting Unsloth training with TWO-LINE format data in Docker..."
+
+    # Build command arguments
+    CMD="python scripts/training/train_unsloth_gemma3.py"
+    CMD="$CMD --train-data $TRAIN_DATA"
+    CMD="$CMD --eval-data $EVAL_DATA"
+    CMD="$CMD --output-dir $OUTPUT_DIR"
+    CMD="$CMD --run-name $RUN_NAME"
+    echo "  Train data: $TRAIN_DATA"
+    echo "  Eval data: $EVAL_DATA"
+    echo "  Output dir: $OUTPUT_DIR"
+    echo "  Run name: $RUN_NAME"
+
+    [ -n "$MODEL_VARIANT" ] && CMD="$CMD --model-variant $MODEL_VARIANT" && echo "  Model variant: $MODEL_VARIANT"
+    [ -n "$EPOCHS" ] && CMD="$CMD --epochs $EPOCHS" && echo "  Epochs: $EPOCHS"
+    [ -n "$BATCH_SIZE" ] && CMD="$CMD --batch-size $BATCH_SIZE" && echo "  Batch size: $BATCH_SIZE"
+    [ -n "$MAX_MEMORY_GB" ] && CMD="$CMD --max-memory-gb $MAX_MEMORY_GB" && echo "  Max memory: ${MAX_MEMORY_GB}GB"
+    [ -n "$MAX_STEPS" ] && CMD="$CMD --max-steps $MAX_STEPS" && echo "  Max steps: $MAX_STEPS"
+    [ -n "$LR" ] && CMD="$CMD --learning-rate $LR" && echo "  Learning rate: $LR"
+    [ -n "$NUM_EVAL_EXAMPLES" ] && CMD="$CMD --num-eval-examples $NUM_EVAL_EXAMPLES" && echo "  Eval examples: $NUM_EVAL_EXAMPLES"
 
     docker run --rm \
         --gpus=all \
@@ -230,12 +318,12 @@ export-gguf MODEL="./models/gemma3-270m-student-unsloth-v1" NAME="" QUANT="Q4_K_
         python scripts/export/export_to_gguf.py --model-path {{MODEL}} --output-name "$NAME" --quantization {{QUANT}}
 
 # Upload GGUF model to HuggingFace Hub
-# Usage: just upload-to-hf gemma3-270m-synthetic-v11 vanpelt/summarizer
+# Usage: just upload-to-hf gemma3-270m-synthetic-v11 vanpelt/catnip-summarizer
 # Configure via environment variables:
 #   WANDB_RUN=https://wandb.ai/... just upload-to-hf ...
 #   INCLUDE_SAFETENSORS=1 just upload-to-hf ...  (includes safetensors, adds ~512MB)
 #   DESCRIPTION="My model description" just upload-to-hf ...
-upload-to-hf MODEL_DIR REPO_ID="vanpelt/summarizer" PRIVATE="--private":
+upload-to-hf MODEL_DIR REPO_ID="vanpelt/catnip-summarizer" PRIVATE="--private":
     #!/usr/bin/env bash
     WANDB_RUN="{{ env('WANDB_RUN', '') }}"
     INCLUDE_SAFETENSORS="{{ env('INCLUDE_SAFETENSORS', '') }}"
@@ -326,8 +414,27 @@ ollama-import DIR_NAME MODEL_NAME="":
     echo "Test with: ollama run $MODEL_NAME 'Fix the login bug'"
 
 # Smoke test
-smoke-test MODEL="gemma3-summary-v4":
-    ollama run {{MODEL}} --verbose --format json <prompt.txt
+# Usage: just smoke-test MODEL
+# Usage with custom temp: HEAT=1.2 just smoke-test MODEL
+smoke-test MODEL="gemma3-summary-v4" HEAT="0.8":
+    #!/usr/bin/env bash
+    FORMAT_FLAG=""
+    if [[ "{{MODEL}}" != *"2l"* ]]; then FORMAT_FLAG="--format json"; fi
+    TEST_MODEL="{{MODEL}}"
+    if [ "{{HEAT}}" != "0.8" ]; then \
+        TEMP_MODEL="{{MODEL}}-heat{{HEAT}}"; \
+        echo "FROM {{MODEL}}" > /tmp/smoke-modelfile; \
+        echo "PARAMETER temperature {{HEAT}}" >> /tmp/smoke-modelfile; \
+        ollama create "$TEMP_MODEL" -f /tmp/smoke-modelfile || true; \
+        TEST_MODEL="$TEMP_MODEL"; \
+        echo "Using temp model: $TEMP_MODEL (temperature={{HEAT}})"; \
+    fi
+    echo ""; echo "-------------------"; echo "Prompt: Fix the bug with the button not re-activating"; echo "-------------------"; ollama run "$TEST_MODEL" --verbose $FORMAT_FLAG "Fix the bug with the button not re-activating"
+    echo ""; echo "-------------------"; echo "Prompt: Fix the login bug"; echo "-------------------"; ollama run "$TEST_MODEL" --verbose $FORMAT_FLAG "Fix the login bug"
+    echo ""; echo "-------------------"; echo "Prompt: Add a new feature to the login page"; echo "-------------------"; ollama run "$TEST_MODEL" --verbose $FORMAT_FLAG "Add a new feature to the login page"
+    echo ""; echo "-------------------"; echo "Prompt: My XML isn't parsing we need to fix it"; echo "-------------------"; ollama run "$TEST_MODEL" --verbose $FORMAT_FLAG "My XML isn't parsing we need to fix it"
+    echo ""; echo "-------------------"; echo "Prompt: That button isn't working, make it animate"; echo "-------------------"; ollama run "$TEST_MODEL" --verbose $FORMAT_FLAG "That button isn't working, make it animate"
+    if [ "{{HEAT}}" != "0.8" ]; then ollama rm "$TEMP_MODEL" || true; fi
 
 # Run tests
 test:
@@ -349,6 +456,53 @@ clean:
     find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
     find . -type f -name "*.pyc" -delete
     rm -rf .pytest_cache .mypy_cache .coverage htmlcov
+
+# Benchmark GGUF model with llama-bench
+# Usage: just bench <model-dir-name>
+# Example: just bench gemma3-270m-synthetic-v11
+bench MODEL_DIR PROMPTS="64,128" TOKENS="32,64":
+    #!/usr/bin/env bash
+    GGUF_PATH="models/gguf/{{MODEL_DIR}}/gemma3-270m-summarizer-Q4_K_M.gguf"
+
+    if [ ! -f "$GGUF_PATH" ]; then
+        echo "Error: Model not found: $GGUF_PATH"
+        echo ""
+        echo "Available models:"
+        find models/gguf -name "*.gguf" -type f | grep -E "gemma3.*Q4_K_M" | head -10
+        exit 1
+    fi
+
+    echo "Benchmarking: {{MODEL_DIR}}"
+    echo "Model: $GGUF_PATH"
+    echo "Prompt sizes: {{PROMPTS}}"
+    echo "Generation sizes: {{TOKENS}}"
+    echo ""
+
+    ../llama.cpp/build/bin/llama-bench \
+        -m "$GGUF_PATH" \
+        -p {{PROMPTS}} \
+        -n {{TOKENS}} \
+        -b 512 \
+        -ub 128 \
+        -t 8 \
+        -ngl 99 \
+        -r 3 \
+        --output md
+
+# Compare two models side by side
+# Usage: just bench-compare model1 model2
+bench-compare MODEL1 MODEL2:
+    @echo "=== Benchmarking {{MODEL1}} ==="
+    @just bench {{MODEL1}}
+    @echo ""
+    @echo "=== Benchmarking {{MODEL2}} ==="
+    @just bench {{MODEL2}}
+
+# Start development server for browser inference demo
+# Usage: just dev-server [port]
+# Then open: http://localhost:8000/?model=gemma3-270m-synthetic-two-line-v1
+dev-server PORT="8000":
+    uv run python docs/dev_server.py --port {{PORT}}
 
 # Monitor GPU usage
 gpu:

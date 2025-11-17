@@ -11,15 +11,35 @@ from unsloth import FastLanguageModel
 
 # Add parent directory to path to import from src
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from src.config import SYSTEM_PROMPT
+from src.config import SYSTEM_PROMPT, SYSTEM_PROMPT_TWO_LINE
 
 # Disable compilation for export
 torch._dynamo.config.disable = True
+
+
+def detect_model_format(model_path: str) -> str:
+    """
+    Detect whether a model was trained on JSON or two-line format.
+
+    Heuristic: Check if the model path contains 'two-line' or 'twoline'.
+
+    Args:
+        model_path: Path to the model directory
+
+    Returns:
+        'two-line' or 'json'
+    """
+    model_path_lower = model_path.lower()
+    if 'two-line' in model_path_lower or 'twoline' in model_path_lower:
+        return 'two-line'
+    return 'json'
+
 
 def export_gguf(
     model_path: str,
     output_name: str = "gemma3-summary-v1",
     quantization: str = "Q4_K_M",
+    format: str = "auto",
 ):
     """
     Export model to GGUF format
@@ -28,10 +48,27 @@ def export_gguf(
         model_path: Path to the trained adapter model
         output_name: Name for the output GGUF file
         quantization: Quantization method (Q4_K_M, Q5_K_M, Q8_0, F16, etc.)
+        format: Output format ('json', 'two-line', or 'auto' to detect from path)
     """
     print("=" * 60)
     print(f"Exporting {model_path} to GGUF")
     print("=" * 60)
+
+    # Detect or use specified format
+    if format == "auto":
+        detected_format = detect_model_format(model_path)
+        print(f"Auto-detected format: {detected_format}")
+    else:
+        detected_format = format
+        print(f"Using specified format: {detected_format}")
+
+    # Select appropriate system prompt
+    if detected_format == "two-line":
+        system_prompt = SYSTEM_PROMPT_TWO_LINE
+        print("Using TWO-LINE system prompt")
+    else:
+        system_prompt = SYSTEM_PROMPT
+        print("Using JSON system prompt")
 
     # Convert model_path to absolute path to avoid issues when changing directories
     model_path = os.path.abspath(model_path)
@@ -94,10 +131,10 @@ def export_gguf(
                 print(f"\n✅ Moved {gguf_files[0]} to: {output_dir}/{expected_gguf}")
 
         # Create Modelfile
-        _create_modelfile(expected_gguf, output_dir)
+        _create_modelfile(expected_gguf, output_dir, system_prompt)
 
         # Create HuggingFace config files (system prompt + params)
-        _create_hf_config_files(output_dir)
+        _create_hf_config_files(output_dir, system_prompt)
 
     except Exception as e:
         print(f"\n❌ Export failed with {quantization}: {e}")
@@ -126,10 +163,10 @@ def export_gguf(
         print(f"\n✅ Successfully exported to: {output_dir}/{expected_gguf}")
 
         # Create Modelfile
-        _create_modelfile(expected_gguf, output_dir)
+        _create_modelfile(expected_gguf, output_dir, system_prompt)
 
         # Create HuggingFace config files (system prompt + params)
-        _create_hf_config_files(output_dir)
+        _create_hf_config_files(output_dir, system_prompt)
 
     print("\n" + "=" * 60)
     print("Export complete!")
@@ -137,11 +174,11 @@ def export_gguf(
     print("=" * 60)
 
 
-def _create_modelfile(gguf_filename: str, output_dir: str):
+def _create_modelfile(gguf_filename: str, output_dir: str, system_prompt: str):
     """Create Modelfile for Ollama import with embedded default system prompt."""
     # Escape the default system prompt for Modelfile SYSTEM directive
     # This makes it available as the default system message
-    default_system = SYSTEM_PROMPT.strip()
+    default_system = system_prompt.strip()
 
     modelfile_content = f"""FROM {gguf_filename}
 
@@ -178,7 +215,7 @@ PARAMETER top_p 0.95
     print(f"✅ Created Modelfile at: {modelfile_path}")
 
 
-def _create_hf_config_files(output_dir: str):
+def _create_hf_config_files(output_dir: str, system_prompt: str):
     """
     Create HuggingFace configuration files for Ollama integration.
 
@@ -195,7 +232,7 @@ def _create_hf_config_files(output_dir: str):
     # Create 'system' file with default system prompt
     system_path = os.path.join(output_dir, "system")
     with open(system_path, 'w') as f:
-        f.write(SYSTEM_PROMPT.strip())
+        f.write(system_prompt.strip())
     print(f"✅ Created HuggingFace system file at: {system_path}")
 
     # Create 'params' file with sampling parameters
@@ -260,6 +297,13 @@ if __name__ == "__main__":
         choices=["Q4_K_M", "Q5_K_M", "Q8_0", "F16", "BF16"],
         help="Quantization method",
     )
+    parser.add_argument(
+        "--format",
+        type=str,
+        default="auto",
+        choices=["auto", "json", "two-line"],
+        help="Output format: 'auto' detects from model path, 'json' or 'two-line' to specify (default: auto)",
+    )
 
     args = parser.parse_args()
 
@@ -267,4 +311,5 @@ if __name__ == "__main__":
         model_path=args.model_path,
         output_name=args.output_name,
         quantization=args.quantization,
+        format=args.format,
     )

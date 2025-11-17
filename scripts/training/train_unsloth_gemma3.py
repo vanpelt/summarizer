@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-Unsloth training script for Gemma3-270M on DGX Spark
+Unsloth training script for Gemma3 models on DGX Spark
 
 Usage:
-    # Train with synthetic dataset (default, uses 74GB GPU memory by default)
+    # Train with synthetic dataset (default 270M model, uses 74GB GPU memory by default)
     uv run python scripts/training/train_unsloth_gemma3.py
+
+    # Train different model variants
+    uv run python scripts/training/train_unsloth_gemma3.py --model-variant 1b
+    uv run python scripts/training/train_unsloth_gemma3.py --model-variant 4b
+    uv run python scripts/training/train_unsloth_gemma3.py --model-variant 12b
+    uv run python scripts/training/train_unsloth_gemma3.py --model-variant 27b
 
     # Train with custom output directory
     uv run python scripts/training/train_unsloth_gemma3.py \
@@ -42,17 +48,178 @@ from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template, train_on_responses_only
 from datasets import load_dataset
 from trl import SFTTrainer
-from transformers import TrainingArguments
+from transformers import TrainingArguments, TrainerCallback
 import wandb
 
-# Configuration matching your Axolotl config
-MODEL_NAME = "unsloth/gemma-3-270m-it-bnb-4bit"  # Unsloth's pre-quantized version
+# Model variant configurations
+MODEL_VARIANTS = {
+    "270m": {
+        "model_name": "unsloth/gemma-3-270m-it-bnb-4bit",
+        "default_batch_size": 8,
+        "default_memory_gb": 74.0,
+        "size_label": "270m"
+    },
+    "1b": {
+        "model_name": "unsloth/gemma-3-1b-it-bnb-4bit",
+        "default_batch_size": 4,
+        "default_memory_gb": 74.0,
+        "size_label": "1b"
+    },
+    "4b": {
+        "model_name": "unsloth/gemma-3-4b-it-bnb-4bit",
+        "default_batch_size": 4,
+        "default_memory_gb": 74.0,
+        "size_label": "4b"
+    },
+    "12b": {
+        "model_name": "unsloth/gemma-3-12b-it-bnb-4bit",
+        "default_batch_size": 1,
+        "default_memory_gb": 100.0,
+        "size_label": "12b"
+    },
+    "27b": {
+        "model_name": "unsloth/gemma-3-27b-it-bnb-4bit",
+        "default_batch_size": 1,
+        "default_memory_gb": 120.0,
+        "size_label": "27b"
+    }
+}
+
 MAX_SEQ_LENGTH = 2048
 
 # LoRA configuration (matching your config)
 LORA_R = 64
 LORA_ALPHA = 128
 LORA_DROPOUT = 0  # Set to 0 for Unsloth fast patching (0.1 causes performance hit)
+
+
+class EvalExamplesCallback(TrainerCallback):
+    """
+    Callback to generate and log evaluation examples to W&B during training.
+    Captures model predictions on eval set and logs them as a wandb.Table.
+    """
+
+    def __init__(self, tokenizer, eval_dataset, num_examples=10):
+        """
+        Args:
+            tokenizer: The model tokenizer
+            eval_dataset: The evaluation dataset (should have 'text' field)
+            num_examples: Number of examples to log (default: 10)
+        """
+        self.tokenizer = tokenizer
+        self.eval_dataset = eval_dataset
+        self.num_examples = min(num_examples, len(eval_dataset))
+
+    def on_evaluate(self, args, state, control, model, **kwargs):
+        """Called after evaluation phase"""
+        if not state.is_world_process_zero:
+            return  # Only log from main process
+
+        try:
+            print(f"\n{'='*60}")
+            print(f"Generating {self.num_examples} evaluation examples for W&B...")
+            print(f"{'='*60}")
+
+            # Prepare the model for inference
+            FastLanguageModel.for_inference(model)
+
+            examples = []
+            for idx in range(self.num_examples):
+                # Get the raw conversations from the original dataset
+                # (before it was formatted with chat template)
+                raw_example = self.eval_dataset[idx]
+                conversations = raw_example.get('conversations', [])
+
+                if not conversations:
+                    continue
+
+                # Extract system prompt (if exists), user prompt, and expected response
+                system_prompt = None
+                user_prompt = None
+                expected_response = None
+
+                for msg in conversations:
+                    if msg.get('role') == 'system':
+                        system_prompt = msg.get('content', '')
+                    elif msg.get('role') == 'user':
+                        user_prompt = msg.get('content', '')
+                    elif msg.get('role') == 'assistant':
+                        expected_response = msg.get('content', '')
+
+                if not user_prompt:
+                    continue
+
+                # Build conversation with system message if present
+                # Note: Gemma3 doesn't have separate system role, so system content
+                # will be merged into the user message by the chat template
+                user_messages = []
+                if system_prompt:
+                    user_messages.append({"role": "system", "content": system_prompt})
+                user_messages.append({"role": "user", "content": user_prompt})
+
+                # Format the prompt string first (without tokenizing)
+                prompt_text = self.tokenizer.apply_chat_template(
+                    user_messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+
+                # Now tokenize the formatted string
+                inputs = self.tokenizer(
+                    prompt_text,
+                    return_tensors="pt",
+                    add_special_tokens=False  # Chat template already added them
+                )
+                input_ids = inputs["input_ids"].to(model.device)
+
+                # Generate response
+                outputs = model.generate(
+                    input_ids,
+                    max_new_tokens=512,
+                    temperature=0.7,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+
+                # Decode only the generated part (skip the input)
+                generated_text = self.tokenizer.decode(
+                    outputs[0][input_ids.shape[1]:],
+                    skip_special_tokens=True
+                )
+
+                examples.append({
+                    "step": state.global_step,
+                    "epoch": state.epoch,
+                    "prompt": user_prompt,
+                    "expected": expected_response or "",
+                    "generated": generated_text.strip()
+                })
+
+                # Print a sample for debugging
+                if idx == 0:
+                    print(f"\nSample example (idx=0):")
+                    print(f"Prompt: {user_prompt[:100]}...")
+                    print(f"Generated: {generated_text.strip()[:100]}...")
+
+            # Log to wandb as a table
+            if examples:
+                table = wandb.Table(
+                    columns=["step", "epoch", "prompt", "expected", "generated"],
+                    data=[[e["step"], e["epoch"], e["prompt"], e["expected"], e["generated"]]
+                          for e in examples]
+                )
+                wandb.log({"eval/examples": table}, step=state.global_step)
+                print(f"✓ Logged {len(examples)} examples to W&B at step {state.global_step}")
+
+            # Put model back in training mode
+            model.train()
+
+        except Exception as e:
+            print(f"Warning: Failed to generate eval examples: {e}")
+            import traceback
+            traceback.print_exc()
+
 
 def get_next_version(base_path: str) -> tuple[str, str]:
     """
@@ -93,7 +260,14 @@ def get_next_version(base_path: str) -> tuple[str, str]:
         next_version += 1
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Gemma3-270M with Unsloth")
+    parser = argparse.ArgumentParser(description="Train Gemma3 models with Unsloth")
+    parser.add_argument(
+        "--model-variant",
+        type=str,
+        default="270m",
+        choices=list(MODEL_VARIANTS.keys()),
+        help="Gemma3 model variant to train (default: 270m)"
+    )
     parser.add_argument(
         "--train-data",
         type=str,
@@ -109,32 +283,32 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="./models/gemma3-270m-synthetic-v1",
-        help="Output directory for model (default: ./models/gemma3-270m-synthetic-v1)"
+        default=None,
+        help="Output directory for model (default: ./models/gemma3-{variant}-synthetic-v1)"
     )
     parser.add_argument(
         "--run-name",
         type=str,
-        default="gemma3-270m-synthetic-v1",
-        help="W&B run name (default: gemma3-270m-synthetic-v1)"
+        default=None,
+        help="W&B run name (default: gemma3-{variant}-synthetic-v1)"
     )
     parser.add_argument(
         "--epochs",
         type=int,
         default=2,
-        help="Number of training epochs (default: 3)"
+        help="Number of training epochs (default: 2)"
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=8,
-        help="Per-device batch size (default: 8)"
+        default=None,
+        help="Per-device batch size (default: model-specific, see MODEL_VARIANTS)"
     )
     parser.add_argument(
         "--max-memory-gb",
         type=float,
-        default=74.0,
-        help="Maximum GPU memory to use in GB (default: 74GB)"
+        default=None,
+        help="Maximum GPU memory to use in GB (default: model-specific, see MODEL_VARIANTS)"
     )
     parser.add_argument(
         "--max-steps",
@@ -148,8 +322,28 @@ def main():
         default=1e-4,
         help="Learning rate (default: 1e-4)"
     )
+    parser.add_argument(
+        "--num-eval-examples",
+        type=int,
+        default=10,
+        help="Number of evaluation examples to log to W&B (default: 10)"
+    )
 
     args = parser.parse_args()
+
+    # Get model variant config
+    model_config = MODEL_VARIANTS[args.model_variant]
+    size_label = model_config["size_label"]
+
+    # Set defaults from model config if not provided
+    if args.batch_size is None:
+        args.batch_size = model_config["default_batch_size"]
+    if args.max_memory_gb is None:
+        args.max_memory_gb = model_config["default_memory_gb"]
+    if args.output_dir is None:
+        args.output_dir = f"./models/gemma3-{size_label}-synthetic-v1"
+    if args.run_name is None:
+        args.run_name = f"gemma3-{size_label}-synthetic-v1"
 
     # Auto-increment version if output directory exists
     original_output_dir = args.output_dir
@@ -159,12 +353,14 @@ def main():
         print(f"[INFO] Output directory '{original_output_dir}' exists, using '{args.output_dir}' instead")
 
     print("=" * 60)
-    print("Unsloth Gemma3-270M Training on DGX Spark")
+    print(f"Unsloth Gemma3-{size_label.upper()} Training on DGX Spark")
     print("=" * 60)
+    print(f"Model variant: {args.model_variant} ({model_config['model_name']})")
     print(f"Train data: {args.train_data}")
     print(f"Eval data: {args.eval_data}")
     print(f"Output dir: {args.output_dir}")
     print(f"Run name: {args.run_name}")
+    print(f"Batch size: {args.batch_size}")
     print(f"Max GPU memory: {args.max_memory_gb}GB")
 
     # Calculate and display training steps
@@ -193,9 +389,10 @@ def main():
     ))
 
     # Load model with Unsloth optimizations
-    print(f"\nLoading model: {MODEL_NAME}")
+    model_name = model_config["model_name"]
+    print(f"\nLoading model: {model_name}")
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=MODEL_NAME,
+        model_name=model_name,
         max_seq_length=MAX_SEQ_LENGTH,
         dtype=None,  # Auto-detect (bfloat16 on DGX Spark)
         load_in_4bit=True,
@@ -228,7 +425,7 @@ def main():
     # Load datasets (Unsloth format with 'conversations' field)
     print("\nLoading datasets...")
     train_dataset = load_dataset("json", data_files=args.train_data, split="train")
-    eval_dataset = load_dataset("json", data_files=args.eval_data, split="train")
+    eval_dataset_raw = load_dataset("json", data_files=args.eval_data, split="train")
 
     # Format function for chat template (following Unsloth best practices)
     def format_chat(examples):
@@ -246,7 +443,7 @@ def main():
 
     print("Formatting datasets with Gemma-3 chat template...")
     train_dataset = train_dataset.map(format_chat, batched=True, remove_columns=train_dataset.column_names)
-    eval_dataset = eval_dataset.map(format_chat, batched=True, remove_columns=eval_dataset.column_names)
+    eval_dataset = eval_dataset_raw.map(format_chat, batched=True, remove_columns=eval_dataset_raw.column_names)
 
     print(f"Train examples: {len(train_dataset)}")
     print(f"Val examples: {len(eval_dataset)}")
@@ -286,7 +483,7 @@ def main():
         gradient_accumulation_steps=4,
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
-        warmup_steps=20,
+        warmup_steps=20 if args.max_steps == 0 else args.max_steps // 10,
         weight_decay=0.01,
         optim="adamw_8bit",
         bf16=True,
@@ -312,6 +509,15 @@ def main():
         max_seq_length=MAX_SEQ_LENGTH,
         packing=True,  # Pack multiple samples per sequence for efficiency
     )
+
+    # Add callback to log eval examples to W&B
+    print(f"Adding evaluation examples callback (logging {args.num_eval_examples} examples per eval)...")
+    eval_callback = EvalExamplesCallback(
+        tokenizer=tokenizer,
+        eval_dataset=eval_dataset_raw,
+        num_examples=args.num_eval_examples
+    )
+    trainer.add_callback(eval_callback)
 
     # Train only on model responses (not user prompts)
     # This is critical for proper fine-tuning!

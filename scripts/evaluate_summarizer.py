@@ -12,25 +12,43 @@ import asyncio
 import argparse
 import requests
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
+# Add parent directory to path to import config
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.config import SYSTEM_PROMPT, SYSTEM_PROMPT_TWO_LINE
 
-def load_prompt_template() -> str:
-    """Load the prompt template from prompt.txt."""
-    prompt_path = Path(__file__).parent.parent / "prompt.txt"
-    with open(prompt_path, "r") as f:
-        # Read everything except the example request at the end
-        content = f.read()
-        # Extract just the template (everything before "Request:")
-        lines = content.split("\n")
-        template_lines = []
-        for line in lines:
-            if line.strip() == "Request:":
-                break
-            template_lines.append(line)
-        return "\n".join(template_lines).strip() + "\n\nRequest:\n"
+
+def is_two_line_model(model_name: str) -> bool:
+    """
+    Detect if a model uses two-line format based on its name.
+
+    Args:
+        model_name: The name of the model
+
+    Returns:
+        True if model uses two-line format, False otherwise
+    """
+    return "2l" in model_name.lower()
+
+
+def load_prompt_template(model_name: str = "") -> str:
+    """
+    Load the appropriate prompt template based on model format.
+
+    Since the system prompt is embedded in the model during training,
+    we just return an empty string - the model already knows its format.
+
+    Args:
+        model_name: The name of the model (to detect format)
+
+    Returns:
+        Empty string (system prompt is in the model)
+    """
+    return ""
 
 
 def load_dataset(dataset_path: str) -> List[Dict]:
@@ -43,7 +61,7 @@ def load_dataset(dataset_path: str) -> List[Dict]:
 
     Each conversation has:
     - User message with full prompt (system + request)
-    - Assistant message with JSON: '{"summary": "...", "branch": "..."}'
+    - Assistant message with JSON: '{"summary": "...", "branch": "..."}' OR two-line format
     """
     dataset = []
     with open(dataset_path, "r") as f:
@@ -71,13 +89,28 @@ def load_dataset(dataset_path: str) -> List[Dict]:
                     # Fallback: use the entire content if no "Request:" marker
                     request = full_prompt
 
-                # Parse the assistant's JSON response
-                expected_output = json.loads(assistant_message["content"])
+                # Parse the assistant's response (JSON or two-line format)
+                assistant_content = assistant_message["content"]
+
+                # Try JSON first
+                try:
+                    expected_output = json.loads(assistant_content)
+                    expected_summary = expected_output.get("summary", "")
+                    expected_branch = expected_output.get("branch", "")
+                except json.JSONDecodeError:
+                    # Try two-line format
+                    lines = [l.strip() for l in assistant_content.split('\n') if l.strip()]
+                    if len(lines) >= 2:
+                        expected_summary = lines[0]
+                        expected_branch = lines[1]
+                    else:
+                        # Skip malformed entries
+                        continue
 
                 dataset.append({
                     "request": request,
-                    "expected_summary": expected_output.get("summary", ""),
-                    "expected_branch": expected_output.get("branch", ""),
+                    "expected_summary": expected_summary,
+                    "expected_branch": expected_branch,
                 })
 
     return dataset
@@ -96,9 +129,9 @@ class SummarizerModelOllama(weave.Model):
     def model_post_init(self, __context: Any) -> None:
         """Initialize model after Pydantic construction."""
         super().model_post_init(__context)
-        # Load prompt template if not provided
+        # Load prompt template if not provided (based on model format)
         if not self.prompt_template:
-            self.prompt_template = load_prompt_template()
+            self.prompt_template = load_prompt_template(self.model_name)
         self._test_connection()
 
     def _test_connection(self):
@@ -149,12 +182,12 @@ class SummarizerModelOllama(weave.Model):
             expected_branch: Expected branch (for reference, not used in prediction)
 
         Returns:
-            Dictionary with generated JSON and metadata
+            Dictionary with generated output and metadata
         """
         start_time = time.time()
 
-        # Construct full prompt from template
-        full_prompt = self.prompt_template + request
+        # Use the request directly - system prompt is embedded in the model
+        full_prompt = request
 
         # Retry logic: up to 3 attempts
         max_retries = 3
@@ -165,25 +198,31 @@ class SummarizerModelOllama(weave.Model):
         for attempt in range(max_retries):
             gen_start = time.time()
             try:
+                # Build request payload based on model format
+                payload = {
+                    "model": self.model_name,
+                    "prompt": full_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": self.temperature,
+                        "num_predict": 256,
+                    }
+                }
+
+                # Only add JSON format schema for JSON models
+                if not is_two_line_model(self.model_name):
+                    payload["format"] = {
+                        "type": "object",
+                        "properties": {
+                            "summary": {"type": "string"},
+                            "branch": {"type": "string"},
+                        },
+                        "required": ["summary", "branch"]
+                    }
+
                 response = requests.post(
                     f"{self.ollama_url}/api/generate",
-                    json={
-                        "model": self.model_name,
-                        "prompt": full_prompt,
-                        "stream": False,
-                        "format": {
-                            "type": "object",
-                            "properties": {
-                                "summary": {"type": "string"},
-                                "branch": {"type": "string"},
-                            },
-                            "required": ["summary", "branch"]
-                        },
-                        "options": {
-                            "temperature": self.temperature,
-                            "num_predict": 256,
-                        }
-                    },
+                    json=payload,
                     timeout=60,  # 1 minute timeout
                 )
                 response.raise_for_status()
@@ -218,6 +257,7 @@ class SummarizerModelOllama(weave.Model):
 
         return {
             "generated_output": generated_text or f"Error: {last_error}",
+            "model_name": self.model_name,  # Include model name for scorers
             "total_time_seconds": round(total_time, 2),
             "generation_time_seconds": round(generation_time, 2),
             "timed_out": timed_out,
@@ -226,48 +266,106 @@ class SummarizerModelOllama(weave.Model):
         }
 
 
-# Weave Scorer Functions
-@weave.op()
-def json_validity_score(model_output: Dict, request: str, expected_summary: str, expected_branch: str) -> Dict:
-    """Check if the output is valid JSON with required fields."""
-    generated = model_output.get("generated_output", "")
+# Unified Parser Functions
+def parse_model_output(output: str, model_name: str = "") -> Dict[str, Optional[str]]:
+    """
+    Parse model output based on detected format.
 
-    # Try to parse as JSON
-    is_valid_json = False
-    has_summary = False
-    has_branch = False
-    parsed_json = None
-    summary = None
-    branch = None
+    Args:
+        output: The model's output text
+        model_name: The model name (to detect expected format)
 
-    try:
-        parsed_json = json.loads(generated)
-        is_valid_json = True
-        has_summary = "summary" in parsed_json
-        has_branch = "branch" in parsed_json
-        summary = parsed_json.get("summary", "")
-        branch = parsed_json.get("branch", "")
-    except json.JSONDecodeError:
+    Returns:
+        Dict with keys: 'summary', 'branch', 'format'
+        - summary: The extracted summary text (or None if not found)
+        - branch: The extracted branch name (or None if not found)
+        - format: 'json', 'two-line', or 'unknown'
+    """
+    output = output.strip()
+
+    # Detect expected format from model name
+    expected_two_line = is_two_line_model(model_name)
+
+    if expected_two_line:
+        # For two-line models, parse as two lines directly
+        lines = [line.strip() for line in output.split('\n') if line.strip()]
+        if len(lines) >= 2:
+            return {
+                "summary": lines[0],
+                "branch": lines[1],
+                "format": "two-line"
+            }
+        # Malformed two-line output
+        return {
+            "summary": None,
+            "branch": None,
+            "format": "unknown"
+        }
+    else:
+        # For JSON models, parse as JSON
+        try:
+            parsed_json = json.loads(output)
+            if "summary" in parsed_json and "branch" in parsed_json:
+                return {
+                    "summary": parsed_json.get("summary", ""),
+                    "branch": parsed_json.get("branch", ""),
+                    "format": "json"
+                }
+        except json.JSONDecodeError:
+            pass
+
         # Try to extract JSON from text if it's wrapped in other content
-        json_match = re.search(r'\{[^{}]*"summary"[^{}]*"branch"[^{}]*\}', generated)
+        json_match = re.search(r'\{[^{}]*"summary"[^{}]*"branch"[^{}]*\}', output)
         if json_match:
             try:
                 parsed_json = json.loads(json_match.group(0))
-                is_valid_json = True
-                has_summary = "summary" in parsed_json
-                has_branch = "branch" in parsed_json
-                summary = parsed_json.get("summary", "")
-                branch = parsed_json.get("branch", "")
+                if "summary" in parsed_json and "branch" in parsed_json:
+                    return {
+                        "summary": parsed_json.get("summary", ""),
+                        "branch": parsed_json.get("branch", ""),
+                        "format": "json"
+                    }
             except json.JSONDecodeError:
                 pass
 
+        # Fallback: unknown format
+        return {
+            "summary": None,
+            "branch": None,
+            "format": "unknown"
+        }
+
+
+# Weave Scorer Functions
+@weave.op()
+def format_validity_score(model_output: Dict, request: str, expected_summary: str, expected_branch: str) -> Dict:
+    """Check if the output is valid and has required fields (JSON or two-line format)."""
+    generated = model_output.get("generated_output", "")
+    model_name = model_output.get("model_name", "")
+
+    # Use unified parser with model name for format detection
+    parsed = parse_model_output(generated, model_name)
+
+    # Check if we successfully extracted both fields
+    has_summary = parsed["summary"] is not None
+    has_branch = parsed["branch"] is not None
+    is_valid_format = parsed["format"] != "unknown"
+
+    # Determine if the output matches expected format
+    expected_format = "two-line" if is_two_line_model(model_name) else "json"
+    matches_expected_format = parsed["format"] == expected_format
+
     return {
-        "is_valid_json": is_valid_json,
+        "is_valid_json": parsed["format"] == "json",  # Keep for backward compatibility
+        "is_valid_format": is_valid_format,
+        "matches_expected_format": matches_expected_format,
+        "expected_format": expected_format,
+        "detected_format": parsed["format"],
         "has_summary_field": has_summary,
         "has_branch_field": has_branch,
         "has_both_fields": has_summary and has_branch,
-        "extracted_summary": summary,
-        "extracted_branch": branch,
+        "extracted_summary": parsed["summary"],
+        "extracted_branch": parsed["branch"],
     }
 
 
@@ -275,21 +373,11 @@ def json_validity_score(model_output: Dict, request: str, expected_summary: str,
 def summary_quality_score(model_output: Dict, request: str, expected_summary: str, expected_branch: str) -> Dict:
     """Evaluate the quality of the summary field."""
     generated = model_output.get("generated_output", "")
+    model_name = model_output.get("model_name", "")
 
-    # First parse JSON to get summary
-    summary = None
-    try:
-        parsed = json.loads(generated)
-        summary = parsed.get("summary", "")
-    except json.JSONDecodeError:
-        # Try to extract JSON
-        json_match = re.search(r'\{[^{}]*"summary"[^{}]*"branch"[^{}]*\}', generated)
-        if json_match:
-            try:
-                parsed = json.loads(json_match.group(0))
-                summary = parsed.get("summary", "")
-            except json.JSONDecodeError:
-                pass
+    # Use unified parser to get summary
+    parsed = parse_model_output(generated, model_name)
+    summary = parsed["summary"]
 
     if summary is None:
         return {
@@ -333,21 +421,11 @@ def summary_quality_score(model_output: Dict, request: str, expected_summary: st
 def branch_quality_score(model_output: Dict, request: str, expected_summary: str, expected_branch: str) -> Dict:
     """Evaluate the quality of the branch field."""
     generated = model_output.get("generated_output", "")
+    model_name = model_output.get("model_name", "")
 
-    # First parse JSON to get branch
-    branch = None
-    try:
-        parsed = json.loads(generated)
-        branch = parsed.get("branch", "")
-    except json.JSONDecodeError:
-        # Try to extract JSON
-        json_match = re.search(r'\{[^{}]*"summary"[^{}]*"branch"[^{}]*\}', generated)
-        if json_match:
-            try:
-                parsed = json.loads(json_match.group(0))
-                branch = parsed.get("branch", "")
-            except json.JSONDecodeError:
-                pass
+    # Use unified parser to get branch
+    parsed = parse_model_output(generated, model_name)
+    branch = parsed["branch"]
 
     if branch is None:
         return {
@@ -419,17 +497,17 @@ def branch_quality_score(model_output: Dict, request: str, expected_summary: str
 
 @weave.op()
 def overall_quality_score(model_output: Dict, request: str, expected_summary: str, expected_branch: str) -> Dict:
-    """Combined quality score based on JSON validity, summary, and branch quality."""
+    """Combined quality score based on format validity, summary, and branch quality."""
     # Get individual scores
-    json_score = json_validity_score(model_output, request, expected_summary, expected_branch)
+    format_score = format_validity_score(model_output, request, expected_summary, expected_branch)
     summary_score = summary_quality_score(model_output, request, expected_summary, expected_branch)
     branch_score = branch_quality_score(model_output, request, expected_summary, expected_branch)
 
     # Calculate overall score (0-100)
     score = 0
 
-    # JSON validity: 20 points
-    if json_score["has_both_fields"]:
+    # Format validity: 20 points
+    if format_score["has_both_fields"]:
         score += 20
 
     # Summary quality: 40 points
@@ -562,7 +640,7 @@ def main():
                 name=f"{model_name.replace(':', '-').replace('/', '-')}-{dataset_name}",
                 dataset=dataset,
                 scorers=[
-                    json_validity_score,
+                    format_validity_score,
                     summary_quality_score,
                     branch_quality_score,
                     overall_quality_score,

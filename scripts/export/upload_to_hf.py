@@ -35,8 +35,8 @@ def main():
     parser.add_argument(
         "--repo-id",
         type=str,
-        required=True,
-        help="HuggingFace repo ID (e.g., vanpelt/summarizer)",
+        default="vanpelt/catnip-summarizer",
+        help="HuggingFace repo ID (default: vanpelt/catnip-summarizer)",
     )
     parser.add_argument(
         "--private",
