@@ -477,6 +477,8 @@ bench MODEL_DIR PROMPTS="64,128" TOKENS="32,64":
     echo "Prompt sizes: {{PROMPTS}}"
     echo "Generation sizes: {{TOKENS}}"
     echo ""
+    echo "Running: ../llama.cpp/build/bin/llama-bench -m \"$GGUF_PATH\" -p {{PROMPTS}} -n {{TOKENS}} -b 512 -ub 128 -t 8 -ngl 99 -r 3 --output md"
+    echo ""
 
     ../llama.cpp/build/bin/llama-bench \
         -m "$GGUF_PATH" \
